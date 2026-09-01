@@ -1,6 +1,6 @@
 # sandbox/ 目录树
 
-> C++ 原生沙箱工程（nanobind 编译为 `win_sandbox_native.pyd`，Windows 专属，Stable ABI）
+> C++ 原生沙箱工程（nanobind 编译为 `win_sandbox_native.pyd`，Windows 专属，Stable ABI；支持 x64 / arm64 / x86 架构）
 
 ```
 sandbox/
@@ -35,6 +35,11 @@ sandbox/
 | wheel | `pip wheel . -w dist`（scikit-build-core） | `dist/win_sandbox-*.whl`（abi3，Python 3.10+） |
 | 独立组装 | `python build.py` | `dist/win_sandbox/`（含 `_native/*.pyd` + Python 包装） |
 | 隔离自测 | `python build.py --selftest` | `src/selftest.exe`（不经绑定层） |
+
+**架构**：支持 x64 / arm64 / x86 全平台。`build.py` 默认自动检测主机架构，
+也可用 `--arch x64|arm64|x86` 显式指定（对应 `vcvars64/arm64/32.bat` 与
+CMake `-A x64|ARM64|Win32`）；C++ 核心代码架构无关，无任何架构特定宏。
+wheel 由 scikit-build-core 按构建机架构产出（跨架构需在对应架构机器或 CI 矩阵构建）。
 
 绑定层为 **nanobind split mode**（`BACKEND_MODULE nanobind_backend`）：扩展模块以 Stable ABI
 （`Py_LIMITED_API`）编译，wheel 标记 `cp310-abi3`，跨 Python 3.10~3.x 版本直接使用；
