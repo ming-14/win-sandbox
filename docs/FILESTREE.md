@@ -1,11 +1,13 @@
 # sandbox/ 目录树
 
-> C++ 原生沙箱工程（pybind11 编译为 `win_sandbox_native.pyd`，Windows 专属）
+> C++ 原生沙箱工程（nanobind 编译为 `win_sandbox_native.pyd`，Windows 专属，Stable ABI）
 
 ```
 sandbox/
+├── build.py                  # 独立构建脚本（CMake + Ninja；--selftest 隔离自测）
+├── pyproject.toml            # wheel 打包（scikit-build-core；split mode → abi3，Python 3.10+）
 ├── src/                       # ═══════ C++ 核心（WRITE_RESTRICTED 受限令牌 + Job） ═══════
-│   ├── CMakeLists.txt         # pybind11 构建（唯一目标 win_sandbox_native.pyd；vcvars + Ninja）
+│   ├── CMakeLists.txt         # nanobind 构建（唯一目标 win_sandbox_native.pyd；vcvars + Ninja）
 │   ├── winacl.h               # 共享定义：Mode/ResourceLimits/LimitKind/Job/SpawnedChild + 函数声明
 │   ├── token.cpp              # CreateRestrictedToken：LUA_TOKEN|WRITE_RESTRICTED，restricting SIDs 构建
 │   ├── acl.cpp                # DACL 操作：grantWrite/revokeWrite（capability SID ACE）+ 宿主进程加固
@@ -13,16 +15,30 @@ sandbox/
 │   ├── job.cpp                # Job Object：资源配额（内存/CPU/进程数/墙钟）+ KILL_ON_CLOSE + IOCP 通知
 │   ├── spawn.cpp              # CreateProcessAsUserW 受限 spawn：ConPTY（HPCON）与继承 stdio 两路
 │   ├── instance.cpp           # SandboxInstance/SandboxedProcess：授权物化、令牌、spawn、wait/terminate/查询
-│   ├── module.cpp             # pybind11 绑定（SandboxInstance / Process，GIL 桥接回调）
-│   └── selftest.cpp           # 独立 C++ 自测入口（不经 pybind11，隔离绑定层崩溃；手动编译运行）
-└── third_party/
-    └── pybind11/              # pybind11 头文件库（vendored，构建时由 CMake 引用）
+│   ├── module.cpp             # nanobind 绑定（SandboxInstance / Process，GIL 桥接回调）
+│   ├── selftest.cpp           # 独立 C++ 自测入口（不经绑定层，隔离崩溃；build.py --selftest 编译运行）
+│   └── python/win_sandbox/    # Python 包装（__init__.py / helpers.py / exceptions.py；wheel 与独立构建共用）
+└── docs/
+    └── FILESTREE.md           # 本文件
 ```
 
 ## 构建产物（gitignore 忽略，不列出）
 
-- `sandbox/src/build/` —— CMake/Ninja 构建目录
-- `win_sandbox_native*.pyd` —— 编译产物，落入 `bin/win_sandbox/_native/`（经 vendored 包 `bin/win_sandbox` 加载）
+- `src/build/` —— CMake/Ninja 构建目录
+- `dist/` —— `python build.py` 组装的可分发包（`dist/win_sandbox/`）与 `pip wheel` 产物（`.whl`）
+- `*.pyd` / `*.obj` / `*.exe` —— 编译中间产物
+
+## 构建方式
+
+| 方式 | 命令 | 产物 |
+|------|------|------|
+| wheel | `pip wheel . -w dist`（scikit-build-core） | `dist/win_sandbox-*.whl`（abi3，Python 3.10+） |
+| 独立组装 | `python build.py` | `dist/win_sandbox/`（含 `_native/*.pyd` + Python 包装） |
+| 隔离自测 | `python build.py --selftest` | `src/selftest.exe`（不经绑定层） |
+
+绑定层为 **nanobind split mode**（`BACKEND_MODULE nanobind_backend`）：扩展模块以 Stable ABI
+（`Py_LIMITED_API`）编译，wheel 标记 `cp310-abi3`，跨 Python 3.10~3.x 版本直接使用；
+运行期需 `nanobind-backend` pip 包（pyproject.toml 已声明依赖）。
 
 ## 模块关系
 

@@ -3,8 +3,6 @@
 补充 C++ 库不做的事：
   - 句柄读写（read_pipe / write_pipe / wait_process / close_handle）
   - wall_clock 定时器（WallClockTimer）
-  - stats 轮询（StatsPoller）
-  - 管道 drain（drain_stdout / drain_stderr）
 
 所有函数纯 ctypes，不依赖任何第三方库。
 """
@@ -13,9 +11,8 @@ from __future__ import annotations
 
 import ctypes
 import threading
-import time
 from ctypes import wintypes
-from typing import Callable, Optional
+from typing import Callable
 
 # =============================================================================
 # ctypes 绑定（kernel32）
@@ -265,87 +262,6 @@ class WallClockTimer:
         self.cancel()
 
 
-# =============================================================================
-# Stats 轮询
-# =============================================================================
-
-class StatsPoller:
-    """周期调 proc.query_accounting + 回调。threading.Thread 实现。
-
-    回调签名：callback(stats: dict) -> None
-    """
-
-    def __init__(self, proc, interval_ms: int, callback: Callable):
-        """
-        Args:
-            proc: Process 对象（需有 query_accounting 方法）
-            interval_ms: 轮询间隔毫秒
-            callback: 统计回调
-        """
-        self._proc = proc
-        self._interval = interval_ms / 1000.0
-        self._cb = callback
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-
-    def _loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                stats = self._proc.query_accounting()
-                self._cb(stats)
-            except Exception:
-                pass
-            self._stop.wait(self._interval)
-
-    def start(self) -> None:
-        """启动轮询线程。"""
-        self._thread.start()
-
-    def stop(self) -> None:
-        """停止轮询线程。"""
-        self._stop.set()
-        self._thread.join(timeout=5)
-
-    # 上下文管理器：with StatsPoller(proc, ms, cb) as poller:
-    def __enter__(self) -> "StatsPoller":
-        self.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.stop()
-
-
-# =============================================================================
-# 管道 drain（后台线程读管道）
-# =============================================================================
-
-def drain_stdout(proc, callback: Callable[[bytes], None],
-                 buffer_size: int = 65536) -> threading.Thread:
-    """后台线程循环 read_pipe(proc.stdout_handle) → callback(data)。EOF 退出。
-
-    Args:
-        proc: Process 对象（需有 stdout_handle 属性）
-        callback: 数据回调
-        buffer_size: 单次读取缓冲区大小
-
-    Returns:
-        后台线程对象（daemon=True）
-    """
-    def _loop():
-        while True:
-            try:
-                data = read_pipe(proc.stdout_handle, buffer_size)
-            except OSError:
-                break
-            if not data:
-                break
-            callback(data)
-
-    t = threading.Thread(target=_loop, daemon=True)
-    t.start()
-    return t
-
-
 def contains_access_denied_keyword(data: bytes) -> bool:
     """检查 bytes 数据是否包含"拒绝访问"/"Access is denied"关键字
 
@@ -357,41 +273,3 @@ def contains_access_denied_keyword(data: bytes) -> bool:
     """
     text = data.decode("utf-8", errors="replace").lower()
     return "拒绝访问" in text or "access is denied" in text or "access denied" in text
-
-
-def drain_stderr(proc, callback: Callable[[bytes], None],
-                 buffer_size: int = 65536) -> threading.Thread:
-    """后台线程循环 read_pipe(proc.stderr_handle) → callback(data)。EOF 退出。
-
-    可选内置 AccessDenied 关键字扫描：若 data 含 "拒绝访问" / "Access is denied"，
-    且 proc 设置了 on_access_denied 回调，则触发。
-
-    Args:
-        proc: Process 对象（需有 stderr_handle 属性）
-        callback: 数据回调
-        buffer_size: 单次读取缓冲区大小
-
-    Returns:
-        后台线程对象（daemon=True）
-    """
-    def _loop():
-        while True:
-            try:
-                data = read_pipe(proc.stderr_handle, buffer_size)
-            except OSError:
-                break
-            if not data:
-                break
-            callback(data)
-            # 内置 AccessDenied 扫描
-            if contains_access_denied_keyword(data):
-                cb = getattr(proc, "on_access_denied", None)
-                if cb is not None:
-                    try:
-                        cb(data)
-                    except Exception:
-                        pass
-
-    t = threading.Thread(target=_loop, daemon=True)
-    t.start()
-    return t

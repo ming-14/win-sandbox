@@ -1,7 +1,7 @@
-"""win_sandbox - Windows 进程沙箱隔离（pybind11 in-process 库形态）。
+"""win_sandbox - Windows 进程沙箱隔离（nanobind in-process 扩展）。
 
-本包直接加载 win_sandbox_native.pyd 扩展，
-以 pybind11 in-process 形态交互，无命名管道通信。
+本包直接加载 win_sandbox_native.pyd 扩展（Stable ABI / abi3，Python 3.10+），
+以 nanobind in-process 形态交互，无命名管道通信。
 
 用法：
     import win_sandbox
@@ -25,7 +25,7 @@ from .exceptions import (  # noqa: E402
     ProtocolError,
 )
 
-# 加载 pybind11 扩展：优先包内 _native/（wheel 安装），回退 build/bin/（开发态）
+# 加载 nanobind 扩展：优先包内 _native/（wheel 安装），回退 build/bin/（开发态）
 _native_dir = _os.path.join(_os.path.dirname(__file__), "_native")
 if _os.path.isdir(_native_dir):
     _sys.path.insert(0, _native_dir)
@@ -42,9 +42,6 @@ from .helpers import (  # noqa: E402
     wait_process,
     close_handle,
     WallClockTimer,
-    StatsPoller,
-    drain_stdout,
-    drain_stderr,
     contains_access_denied_keyword,
 )
 
@@ -63,8 +60,5 @@ __all__ = [
     "wait_process",
     "close_handle",
     "WallClockTimer",
-    "StatsPoller",
-    "drain_stdout",
-    "drain_stderr",
     "__version__",
 ]

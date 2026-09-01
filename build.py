@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""sandbox 独立构建脚本（Windows 专属，pybind11 + CMake + MSVC）。
+"""sandbox 独立构建脚本（Windows 专属，nanobind + CMake + MSVC）。
 
 编译 win_sandbox_native.pyd 并组装可分发的 win_sandbox Python 包。
 
@@ -9,7 +9,7 @@
     python build.py --clean                 # 删除 src/build 强制全量重新生成
     python build.py --config Debug          # 选择配置
     python build.py --out <dir>             # 指定输出目录
-    python build.py --selftest              # 编译并运行 selftest.exe（不经 pybind11）
+    python build.py --selftest              # 编译并运行 selftest.exe（不经绑定层）
     python build.py --verbose               # 详细日志
 """
 
@@ -27,7 +27,6 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 SRC_DIR = SCRIPT_DIR / "src"
 BUILD_DIR = SRC_DIR / "build"
-THIRD_PARTY_DIR = SCRIPT_DIR / "third_party"
 PYTHON_SRC_DIR = SRC_DIR / "python" / "win_sandbox"
 
 IS_WINDOWS = sys.platform == "win32"
@@ -216,7 +215,7 @@ def build_selftest():
         logger.error("vcvars64.bat 未找到，跳过 selftest")
         return
 
-    # 收集所有 .cpp 源文件（排除 module.cpp — 它依赖 pybind11）
+    # 收集所有 .cpp 源文件（排除 module.cpp — 它依赖 nanobind）
     cpp_files = sorted(SRC_DIR.glob("*.cpp"))
     selftest_srcs = [f for f in cpp_files if f.name != "module.cpp"]
     src_list = " ".join(str(f) for f in selftest_srcs)
@@ -269,7 +268,7 @@ def parse_args(argv=None):
     parser.add_argument("--out", type=Path, default=SCRIPT_DIR / "dist",
                         help="输出目录（默认 dist/win_sandbox）")
     parser.add_argument("--selftest", action="store_true",
-                        help="编译并运行 selftest.exe（不经 pybind11 隔离测试）")
+                        help="编译并运行 selftest.exe（不经绑定层隔离测试）")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="详细日志")
     return parser.parse_args(argv)
