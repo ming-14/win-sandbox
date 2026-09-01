@@ -143,13 +143,24 @@ def build_sandbox(config: str, clean: bool, output_dir: Path):
         logger.info("--clean: 删除 %s", BUILD_DIR)
         shutil.rmtree(BUILD_DIR)
 
+    # ---- nanobind CMake 路径探测 ----
+    nb_prefix = ""
+    try:
+        import nanobind
+        nb_cmake = Path(nanobind.cmake_dir())
+        if nb_cmake.is_dir():
+            nb_prefix = f"-DCMAKE_PREFIX_PATH=\"{nb_cmake}\""
+            logger.info("nanobind CMake: %s", nb_cmake)
+    except Exception:
+        logger.warning("nanobind 未安装，请 pip install nanobind；仅 selftest 模式可用")
+
     # ---- 构建 ----
     src = str(SRC_DIR)
     build = str(BUILD_DIR)
     if ninja:
-        configure_cmd = f'cmake -S "{src}" -B "{build}" -G "{generator}" -DCMAKE_BUILD_TYPE={config}'
+        configure_cmd = f'cmake -S "{src}" -B "{build}" -G "{generator}" -DCMAKE_BUILD_TYPE={config} {nb_prefix}'
     else:
-        configure_cmd = f'cmake -S "{src}" -B "{build}" -G "{generator}" -A x64'
+        configure_cmd = f'cmake -S "{src}" -B "{build}" -G "{generator}" -A x64 {nb_prefix}'
 
     build_cmd = f'cmake --build "{build}" --config {config}'
 
@@ -213,7 +224,7 @@ def build_selftest():
 
     lines = [
         'call "{}" >nul 2>&1'.format(vcvars),
-        f'cl /EHsc /std:c++20 /I"{SRC_DIR}" {src_list} /Fe:"{out_exe}" /link advapi32.lib bcrypt.lib shell32.lib',
+        f'cl /EHsc /std:c++20 /utf-8 /I"{SRC_DIR}" {src_list} /Fe:"{out_exe}" /link advapi32.lib bcrypt.lib shell32.lib',
     ]
     cmd_file = write_cmd_wrapper("selftest", lines)
     logger.info("编译 selftest.exe ...")

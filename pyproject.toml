@@ -1,0 +1,36 @@
+[build-system]
+requires = ["scikit-build-core>=0.5.0", "nanobind>=3.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "win-sandbox"
+version = "0.2.0"
+description = "Windows process sandbox: WRITE_RESTRICTED token + capability-SID write allowlist + Job resource limits"
+readme = "docs/FILESTREE.md"
+requires-python = ">=3.10"
+license = { file = "License" }
+authors = [{ name = "ming-14" }]
+keywords = ["sandbox", "windows", "acl", "job", "nanobind"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: C++",
+  "Operating System :: Microsoft :: Windows",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# split mode（nanobind_backend）运行期需要 backend 模块
+dependencies = ["nanobind-backend>=3.0"]
+
+[project.urls]
+Homepage = "https://github.com/ming-14/PTY-Agent"
+
+[tool.scikit-build]
+# CMake 源目录是 src/（CMakeLists.txt 所在处）
+cmake.source-dir = "src"
+cmake.build-type = "Release"
+# 产物安装路径完全由 CMakeLists.txt 的 install() 规则决定
+# （.pyd → win_sandbox/_native/，py 包装 → win_sandbox/）
+# 禁用自动包发现，避免与 CMake 安装规则重复
+wheel.packages = []
+# Stable ABI：Python 3.10+ floor（abi3），跨 3.10~3.x 版本兼容，无需重新编译
+wheel.py-api = "cp310"

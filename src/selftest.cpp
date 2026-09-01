@@ -14,7 +14,7 @@ int wmain() {
     std::wstring workdir = tmpPath;
     workdir += L"sandbox-inprocess-smoke";
 
-    auto* proc = sb.startProcess(
+    auto proc = sb.startProcess(
         L"cmd /d /c \"ping -n 3 127.0.0.1 >nul\"", workdir, true, {}, nullptr);
     printf("pid=%lu\n", proc->pid());
 
