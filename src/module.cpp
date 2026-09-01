@@ -36,9 +36,9 @@ public:
 
   // Setters: install Python callables; the C++ side invokes them from the
   // job's IOCP thread through the locked process callbacks, and the bridge
-  // acquires the GIL there.  None 清除对应回调（与 getter 返回 None 对称）。
+  // acquires the GIL there.
   void set_on_process_started(nb::object f) {
-    started_ = f.is_none() ? nb::callable() : nb::cast<nb::callable>(f);
+    started_ = nb::cast<nb::callable>(f);
     process_->setCallbacks(
         [this](DWORD pid) { invoke(started_, pid); },
         [this](DWORD pid, DWORD code, bool abnormal) {
@@ -46,7 +46,7 @@ public:
         });
   }
   void set_on_process_exited(nb::object f) {
-    exited_ = f.is_none() ? nb::callable() : nb::cast<nb::callable>(f);
+    exited_ = nb::cast<nb::callable>(f);
     process_->setCallbacks(
         [this](DWORD pid) { invoke(started_, pid); },
         [this](DWORD pid, DWORD code, bool abnormal) {
