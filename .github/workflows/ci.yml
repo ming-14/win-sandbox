@@ -34,19 +34,9 @@ jobs:
           - arch: x64
             runner: windows-latest
             py-arch: x64
-            # nanobind-backend 提供 win_amd64 wheel → 可安装并做冒烟测试
-            runtime-test: "true"
-          - arch: x86
-            runner: windows-latest
-            py-arch: x86
-            # nanobind-backend 无 win32 wheel（PyPI 仅 win_amd64/win_arm64），
-            # 运行期依赖不可安装 → 仅验证 x86 编译，跳过安装/冒烟测试
-            runtime-test: "false"
           - arch: arm64
             runner: windows-11-arm
             py-arch: arm64
-            # nanobind-backend 提供 win_arm64 wheel → 可安装并做冒烟测试
-            runtime-test: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,17 +61,10 @@ jobs:
           python -c "import glob; import zipfile; z=zipfile.ZipFile(glob.glob('dist/*.whl')[0]); print('\n'.join(z.namelist()))"
 
       - name: Install wheel (+ runtime deps)
-        if: matrix.runtime-test == 'true'
         run: pip install (Get-ChildItem dist/*.whl).FullName
 
       - name: Smoke test
-        if: matrix.runtime-test == 'true'
         run: python tests/smoke.py
-
-      - name: "Skip runtime test note (x86: no win32 nanobind-backend)"
-        if: matrix.runtime-test == 'false'
-        run: |
-          Write-Host "x86: nanobind-backend 无 win32 wheel，跳过安装/冒烟测试；wheel 编译已验证"
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4

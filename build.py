@@ -3,11 +3,12 @@
 """sandbox 独立构建脚本（Windows 专属，nanobind + CMake + MSVC）。
 
 编译 win_sandbox_native.pyd 并组装可分发的 win_sandbox Python 包。
-支持 x64 / arm64 / x86 架构（默认按主机架构自动选择）。
+支持 x64 / arm64 架构（默认按主机架构自动选择；x86 因 nanobind-backend
+无 win32 wheel 运行期不可用，故不支持）。
 
 用法:
     python build.py                         # 增量构建（默认 Release，输出到 dist/win_sandbox）
-    python build.py --arch arm64            # 指定目标架构（x64|arm64|x86）
+    python build.py --arch arm64            # 指定目标架构（x64|arm64）
     python build.py --clean                 # 删除 src/build 强制全量重新生成
     python build.py --config Debug          # 选择配置
     python build.py --out <dir>             # 指定输出目录
@@ -35,11 +36,11 @@ PYTHON_SRC_DIR = SRC_DIR / "python" / "win_sandbox"
 IS_WINDOWS = sys.platform == "win32"
 
 # 架构映射：架构名 → (vcvars 批处理文件名, CMake 平台参数)
-# x86/arm64 为 Win32/ARM64，x64 为 x64（保持中立，不偏袒任何架构）
+# 仅支持 x64/arm64：nanobind-backend 无 win32 wheel，win32 沙箱运行期不可用，
+# 故不构建 win32（x86）产物
 ARCH_TABLE = {
     "x64": {"vcvars": "vcvars64.bat", "cmake": "x64"},
     "arm64": {"vcvars": "vcvarsarm64.bat", "cmake": "ARM64"},
-    "x86": {"vcvars": "vcvars32.bat", "cmake": "Win32"},
 }
 ARCH_NAMES = tuple(ARCH_TABLE)
 
@@ -49,9 +50,6 @@ _HOST_ARCH_MAP = {
     "x86_64": "x64",
     "ARM64": "arm64",
     "aarch64": "arm64",
-    "x86": "x86",
-    "i386": "x86",
-    "i686": "x86",
 }
 
 logger = logging.getLogger("sandbox-build")
