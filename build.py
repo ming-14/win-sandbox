@@ -256,7 +256,8 @@ def build_selftest(arch: str):
     cpp_files = sorted(SRC_DIR.glob("*.cpp"))
     selftest_srcs = [f for f in cpp_files if f.name != "module.cpp"]
     src_list = " ".join(str(f) for f in selftest_srcs)
-    out_exe = SRC_DIR / "selftest.exe"
+    out_exe = BUILD_DIR / "selftest.exe"
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
     lines = [
         'call "{}" >nul 2>&1'.format(vcvars),

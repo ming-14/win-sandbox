@@ -1,0 +1,115 @@
+# win-sandbox CI — 三架构构建 + 测试 + tag 发 Release
+#
+# 架构矩阵：
+#   x64   → windows-latest（amd64）
+#   x86   → windows-latest + 32 位 Python（win32）
+#   arm64 → windows-11-arm（native ARM64 runner）
+#
+# 触发：
+#   - push / PR（master、main）：构建 + 冒烟测试，上传 wheel 产物
+#   - tag v*：构建 + 测试 + 自动创建 GitHub Release（附三个 wheel）
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 三架构构建 + 测试 ──────────────────────────────────────────────
+  build:
+    name: build-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            py-arch: x64
+            # nanobind-backend 提供 win_amd64 wheel → 可安装并做冒烟测试
+            runtime-test: "true"
+          - arch: x86
+            runner: windows-latest
+            py-arch: x86
+            # nanobind-backend 无 win32 wheel（PyPI 仅 win_amd64/win_arm64），
+            # 运行期依赖不可安装 → 仅验证 x86 编译，跳过安装/冒烟测试
+            runtime-test: "false"
+          - arch: arm64
+            runner: windows-11-arm
+            py-arch: arm64
+            # nanobind-backend 提供 win_arm64 wheel → 可安装并做冒烟测试
+            runtime-test: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python (${{ matrix.py-arch }})
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.py-arch }}
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install scikit-build-core nanobind
+
+      - name: Build wheel
+        run: pip wheel . --no-deps -w dist
+
+      - name: Show wheel
+        run: |
+          Get-ChildItem dist
+          python -c "import glob; import zipfile; z=zipfile.ZipFile(glob.glob('dist/*.whl')[0]); print('\n'.join(z.namelist()))"
+
+      - name: Install wheel (+ runtime deps)
+        if: matrix.runtime-test == 'true'
+        run: pip install (Get-ChildItem dist/*.whl).FullName
+
+      - name: Smoke test
+        if: matrix.runtime-test == 'true'
+        run: python tests/smoke.py
+
+      - name: "Skip runtime test note (x86: no win32 nanobind-backend)"
+        if: matrix.runtime-test == 'false'
+        run: |
+          Write-Host "x86: nanobind-backend 无 win32 wheel，跳过安装/冒烟测试；wheel 编译已验证"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.arch }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # ── tag v* 时发 Release ────────────────────────────────────────────
+  release:
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          merge-multiple: true
+
+      - name: Show wheels
+        run: ls -la wheels
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: wheels/*.whl
+          generate_release_notes: true

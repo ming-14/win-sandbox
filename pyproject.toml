@@ -19,7 +19,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 # split mode（nanobind_backend）运行期需要 backend 模块
-dependencies = ["nanobind-backend>=3.0"]
+dependencies = ["nanobind-backend>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/ming-14/PTY-Agent"

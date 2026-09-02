@@ -4,8 +4,10 @@
 
 ```
 sandbox/
-├── build.py                  # 独立构建脚本（CMake + Ninja；--selftest 隔离自测）
+├── build.py                  # 独立构建脚本（CMake + Ninja；--arch 多架构；--selftest 隔离自测）
 ├── pyproject.toml            # wheel 打包（scikit-build-core；split mode → abi3，Python 3.10+）
+├── .github/workflows/ci.yml  # CI：x64/x86/arm64 构建+测试；tag v* 自动发 Release
+├── tests/smoke.py            # 跨架构冒烟测试（CI 与本地通用）
 ├── src/                       # ═══════ C++ 核心（WRITE_RESTRICTED 受限令牌 + Job） ═══════
 │   ├── CMakeLists.txt         # nanobind 构建（唯一目标 win_sandbox_native.pyd；vcvars + Ninja）
 │   ├── winacl.h               # 共享定义：Mode/ResourceLimits/LimitKind/Job/SpawnedChild + 函数声明
