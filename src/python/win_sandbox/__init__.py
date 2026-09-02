@@ -45,7 +45,7 @@ from .helpers import (  # noqa: E402
     contains_access_denied_keyword,
 )
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "SandboxInstance",
