@@ -3,12 +3,10 @@
 """sandbox 独立构建脚本（Windows 专属，nanobind + CMake + MSVC）。
 
 编译 win_sandbox_native.pyd 并组装可分发的 win_sandbox Python 包。
-支持 x64 / arm64 架构（默认按主机架构自动选择；x86 因 nanobind-backend
-无 win32 wheel 运行期不可用，故不支持）。
+按主机架构构建（x64 / arm64）；交叉编译请用 CI 矩阵或 wheel 构建。
 
 用法:
     python build.py                         # 增量构建（默认 Release，输出到 dist/win_sandbox）
-    python build.py --arch arm64            # 指定目标架构（x64|arm64）
     python build.py --clean                 # 删除 src/build 强制全量重新生成
     python build.py --config Debug          # 选择配置
     python build.py --out <dir>             # 指定输出目录
@@ -35,21 +33,10 @@ PYTHON_SRC_DIR = SRC_DIR / "python" / "win_sandbox"
 
 IS_WINDOWS = sys.platform == "win32"
 
-# 架构映射：架构名 → (vcvars 批处理文件名, CMake 平台参数)
-# 仅支持 x64/arm64：nanobind-backend 无 win32 wheel，win32 沙箱运行期不可用，
-# 故不构建 win32（x86）产物
+# 主机架构 → (vcvars 批处理文件, CMake 平台参数)
 ARCH_TABLE = {
-    "x64": {"vcvars": "vcvars64.bat", "cmake": "x64"},
-    "arm64": {"vcvars": "vcvarsarm64.bat", "cmake": "ARM64"},
-}
-ARCH_NAMES = tuple(ARCH_TABLE)
-
-# 主机架构 → 支持的架构名（Python platform.machine() 返回值映射）
-_HOST_ARCH_MAP = {
-    "AMD64": "x64",
-    "x86_64": "x64",
-    "ARM64": "arm64",
-    "aarch64": "arm64",
+    "AMD64": ("vcvars64.bat", "x64"),
+    "ARM64": ("vcvarsarm64.bat", "ARM64"),
 }
 
 logger = logging.getLogger("sandbox-build")
@@ -71,18 +58,8 @@ def run_cmd(args, cwd=None):
         raise
 
 
-def detect_host_arch():
-    """按主机架构选择架构名（x64/arm64/x86）；无法识别时返回 None。"""
-    return _HOST_ARCH_MAP.get(platform.machine())
-
-
-def find_vcvars(arch):
-    """定位目标架构的 vcvars*.bat：优先 vswhere 探测实际安装，回退常见版本/版本目录路径。
-
-    Args:
-        arch: 架构名（x64/arm64/x86），决定查找哪个 vcvars 批处理文件。
-    """
-    vcvars_name = ARCH_TABLE[arch]["vcvars"]
+def find_vcvars(vcvars_name):
+    """定位 vcvars*.bat：优先 vswhere 探测实际安装，回退常见版本/版本目录路径。"""
     vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / \
         "Microsoft Visual Studio/Installer/vswhere.exe"
     if vswhere.is_file():
@@ -133,9 +110,8 @@ def setup_logging(verbose: bool):
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
-    level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=level,
+        level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(message)s",
         handlers=[logging.StreamHandler()],
     )
@@ -145,63 +121,53 @@ def setup_logging(verbose: bool):
 # 构建步骤
 # =============================================================================
 
-def build_sandbox(config: str, clean: bool, output_dir: Path, arch: str):
+def build_sandbox(config: str, clean: bool, output_dir: Path, arch: tuple):
     """编译 win_sandbox_native.pyd 并组装 Python 包。"""
-    # ---- 检测工具链 ----
+    vcvars_name, cmake_arch = arch
+
     cmake = shutil.which("cmake")
     if not cmake:
         logger.error("cmake 未找到，请先安装 CMake（https://cmake.org/download/）")
         sys.exit(1)
 
-    vcvars = find_vcvars(arch)
+    vcvars = find_vcvars(vcvars_name)
     if not vcvars:
-        logger.error("%s 未找到，请安装 Visual Studio 并确认 %s 工具链可用",
-                     ARCH_TABLE[arch]["vcvars"], arch)
+        logger.error("%s 未找到，请安装 Visual Studio 并确认该工具链可用", vcvars_name)
         sys.exit(1)
-    logger.info("%s (arch=%s): %s", ARCH_TABLE[arch]["vcvars"], arch, vcvars)
+    logger.info("%s: %s", vcvars_name, vcvars)
 
-    # ---- 检测 Ninja ----
+    # Ninja 是单架构生成器：架构由 vcvars 环境中的编译器决定，无需 -A；
+    # 未安装 Ninja 时回退 Visual Studio 多架构生成器（需 -A 指定平台）。
     ninja = shutil.which("ninja")
     if ninja:
         generator = "Ninja"
+        arch_flag = ""
         logger.info("generator: Ninja")
     else:
-        generator = 'Visual Studio 17 2022'
+        generator = "Visual Studio 17 2022"
+        arch_flag = f"-A {cmake_arch} "
         logger.warning("ninja 未找到，回退 Visual Studio generator（速度较慢，推荐安装 Ninja）")
 
-    # ---- 清理（可选） ----
     if clean and BUILD_DIR.exists():
         logger.info("--clean: 删除 %s", BUILD_DIR)
         shutil.rmtree(BUILD_DIR)
 
-    # ---- nanobind CMake 路径探测 ----
+    # nanobind 的 CMake 配置路径由 pip 包提供
     nb_prefix = ""
     try:
         import nanobind
         nb_cmake = Path(nanobind.cmake_dir())
         if nb_cmake.is_dir():
-            nb_prefix = f"-DCMAKE_PREFIX_PATH=\"{nb_cmake}\""
+            nb_prefix = f'-DCMAKE_PREFIX_PATH="{nb_cmake}"'
             logger.info("nanobind CMake: %s", nb_cmake)
     except Exception:
         logger.warning("nanobind 未安装，请 pip install nanobind；仅 selftest 模式可用")
 
-    # ---- 构建 ----
-    src = str(SRC_DIR)
-    build = str(BUILD_DIR)
-    cmake_arch = ARCH_TABLE[arch]["cmake"]
-    if ninja:
-        # Ninja 是单架构生成器：架构由 vcvars 环境中的编译器决定，无需 -A
-        configure_cmd = f'cmake -S "{src}" -B "{build}" -G "{generator}" -DCMAKE_BUILD_TYPE={config} {nb_prefix}'
-    else:
-        # Visual Studio 多架构生成器：通过 -A 指定平台
-        configure_cmd = f'cmake -S "{src}" -B "{build}" -G "{generator}" -A {cmake_arch} {nb_prefix}'
-
-    build_cmd = f'cmake --build "{build}" --config {config}'
-
     lines = [
         'call "{}" >nul 2>&1'.format(vcvars),
-        configure_cmd,
-        build_cmd,
+        f'cmake -S "{SRC_DIR}" -B "{BUILD_DIR}" -G "{generator}" {arch_flag}'
+        f'-DCMAKE_BUILD_TYPE={config} {nb_prefix}',
+        f'cmake --build "{BUILD_DIR}" --config {config}',
     ]
     cmd_file = write_cmd_wrapper("sandbox", lines)
     logger.info("配置并构建 win_sandbox_native.pyd (config=%s) ...", config)
@@ -214,52 +180,43 @@ def build_sandbox(config: str, clean: bool, output_dir: Path, arch: str):
         logger.error("构建失败（exit=%s），详情见上方日志", rc)
         sys.exit(1)
 
-    # ---- 查找产物 ----
-    pyd_pattern = "win_sandbox_native*.pyd"
-    pyd = None
-    for p in BUILD_DIR.rglob(pyd_pattern):
-        if p.is_file():
-            pyd = p
-            break
+    pyd = next((p for p in BUILD_DIR.rglob("win_sandbox_native*.pyd") if p.is_file()), None)
     if not pyd:
-        logger.error("未找到构建产物 %s", pyd_pattern)
+        logger.error("未找到构建产物 win_sandbox_native*.pyd")
         sys.exit(1)
     logger.info("产物: %s", pyd.name)
 
-    # ---- 组装 Python 包 ----
     package_dir = output_dir / "win_sandbox"
     native_dir = package_dir / "_native"
     native_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(pyd), str(native_dir / pyd.name))
     logger.info("复制 .pyd → %s", native_dir / pyd.name)
 
-    if PYTHON_SRC_DIR.is_dir():
-        for py_file in PYTHON_SRC_DIR.glob("*.py"):
-            shutil.copy2(str(py_file), str(package_dir / py_file.name))
-            logger.info("复制 Python 包装 → %s", package_dir / py_file.name)
-    else:
-        logger.warning("Python 包装源目录不存在: %s", PYTHON_SRC_DIR)
+    for py_file in PYTHON_SRC_DIR.glob("*.py"):
+        shutil.copy2(str(py_file), str(package_dir / py_file.name))
+        logger.info("复制 Python 包装 → %s", package_dir / py_file.name)
 
     logger.info("Python 包已组装到: %s", package_dir)
 
 
-def build_selftest(arch: str):
+def build_selftest(arch: tuple):
     """编译并运行 selftest.exe（不经绑定层，隔离 C++ 核心崩溃）。"""
-    vcvars = find_vcvars(arch)
+    vcvars_name, _ = arch
+    vcvars = find_vcvars(vcvars_name)
     if not vcvars:
-        logger.error("%s 未找到，跳过 selftest（arch=%s）", ARCH_TABLE[arch]["vcvars"], arch)
+        logger.error("%s 未找到，跳过 selftest", vcvars_name)
         return
 
     # 收集所有 .cpp 源文件（排除 module.cpp — 它依赖 nanobind）
-    cpp_files = sorted(SRC_DIR.glob("*.cpp"))
-    selftest_srcs = [f for f in cpp_files if f.name != "module.cpp"]
-    src_list = " ".join(str(f) for f in selftest_srcs)
+    srcs = [f for f in sorted(SRC_DIR.glob("*.cpp")) if f.name != "module.cpp"]
     out_exe = BUILD_DIR / "selftest.exe"
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
+    src_list = " ".join(str(f) for f in srcs)
     lines = [
         'call "{}" >nul 2>&1'.format(vcvars),
-        f'cl /EHsc /std:c++20 /utf-8 /I"{SRC_DIR}" {src_list} /Fe:"{out_exe}" /link advapi32.lib bcrypt.lib shell32.lib',
+        f'cl /EHsc /std:c++20 /utf-8 /I"{SRC_DIR}" {src_list} /Fe:"{out_exe}" '
+        '/link advapi32.lib bcrypt.lib shell32.lib',
     ]
     cmd_file = write_cmd_wrapper("selftest", lines)
     logger.info("编译 selftest.exe ...")
@@ -286,19 +243,16 @@ def build_selftest(arch: str):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="sandbox 独立构建脚本（Windows 专属）",
+        description="sandbox 独立构建脚本（Windows 专属，按主机架构构建）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 示例:
-  python build.py                         # 增量构建（默认主机架构），输出到 dist/win_sandbox
-  python build.py --arch arm64            # 指定 arm64 架构
+  python build.py                         # 增量构建，输出到 dist/win_sandbox
   python build.py --clean                 # 全量重新构建
   python build.py --config Debug          # Debug 构建
   python build.py --out pkg               # 输出到 pkg/win_sandbox
   python build.py --selftest              # 编译并运行自测
 """)
-    parser.add_argument("--arch", default=None, choices=ARCH_NAMES,
-                        help="目标架构（x64/arm64/x86，默认自动检测主机架构）")
     parser.add_argument("--clean", action="store_true",
                         help="删除 src/build 强制全量重新生成")
     parser.add_argument("--config", default="Release",
@@ -321,20 +275,17 @@ def main():
         logger.error("sandbox 为 Windows 专属组件，仅支持 Windows 编译")
         sys.exit(1)
 
-    # 确定目标架构：优先 --arch，未指定则自动检测主机架构
-    arch = args.arch or detect_host_arch()
-    if not arch:
-        logger.error("无法自动检测主机架构（platform.machine()=%s），请用 --arch 显式指定",
-                     platform.machine())
-        sys.exit(1)
-    if arch not in ARCH_TABLE:
-        logger.error("不支持的架构: %s，可选: %s", arch, ", ".join(ARCH_NAMES))
+    machine = platform.machine()
+    arch = ARCH_TABLE.get(machine)
+    if arch is None:
+        logger.error("不支持的主机架构: %s（仅支持 %s）",
+                     machine, " / ".join(ARCH_TABLE))
         sys.exit(1)
 
     logger.info("sandbox 独立构建")
     logger.info("源目录: %s", SRC_DIR)
     logger.info("构建目录: %s", BUILD_DIR)
-    logger.info("目标架构: %s", arch)
+    logger.info("主机架构: %s", machine)
     logger.info("输出目录: %s", args.out / "win_sandbox")
 
     build_sandbox(args.config, args.clean, args.out, arch)

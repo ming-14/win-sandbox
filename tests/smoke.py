@@ -1,4 +1,4 @@
-"""win_sandbox 跨架构冒烟测试（CI 用；x64 / x86 / arm64 通用）。
+"""win_sandbox 冒烟测试（CI 用；x64 / arm64 通用）。
 
 覆盖点：
   - 包可导入、扩展模块可加载（本地为 in-process nanobind 扩展）

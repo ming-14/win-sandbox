@@ -4,7 +4,6 @@
 #include <shellapi.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <stdexcept>
 
 #pragma comment(lib, "shell32.lib")
@@ -13,30 +12,15 @@
 namespace winacl {
 namespace {
 
-// Split a Windows command line via CommandLineToArgvW (exact CreateProcess
-// semantics, including backslash-quote escapes and empty arguments).
-std::vector<std::wstring> splitCommandLine(const std::wstring& commandLine) {
+// Reject an empty/whitespace-only command line up front: CreateProcessAsUserW
+// would otherwise fail with a less obvious error. The command line is passed
+// through verbatim (CreateProcessAsUserW does its own CommandLineToArgvW split).
+bool hasAnyArgument(const std::wstring& commandLine) {
   int argc = 0;
   wchar_t** argv = CommandLineToArgvW(commandLine.c_str(), &argc);
-  if (argv == nullptr) {
-    throw std::runtime_error("CommandLineToArgvW failed");
-  }
-  std::vector<std::wstring> out;
-  try {
-    out.reserve(static_cast<size_t>(argc));
-    for (int i = 0; i < argc; i++) out.emplace_back(argv[i]);
-  } catch (...) {
-    LocalFree(argv);
-    throw;
-  }
+  if (argv == nullptr) return false;
   LocalFree(argv);
-  return out;
-}
-
-std::string reasonFor(bool userTerminated, bool timedOut, LimitKind kind) {
-  if (userTerminated) return "user";
-  if (timedOut) return "timeout";
-  return limitKindString(kind);
+  return argc > 0;
 }
 
 }  // namespace
@@ -50,11 +34,6 @@ SandboxedProcess::SandboxedProcess(SpawnedChild child, std::unique_ptr<Job> job,
                                    bool selfManagedTemp, uint64_t wallClockMs)
     : child_(child), job_(std::move(job)), token_(token),
       tempDir_(std::move(tempDir)), selfManagedTemp_(selfManagedTemp) {
-  // Bridge the Job's IOCP notifications to this process's (locked) callbacks.
-  job_->onNewProcess = [this](DWORD pid) { notifyStarted(pid); };
-  job_->onExitProcess = [this](DWORD pid, DWORD code, bool abnormal) {
-    notifyExited(pid, code, abnormal);
-  };
   if (wallClockMs > 0) {
     wallClockEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     wallClockThread_ = std::thread([this, wallClockMs] {
@@ -72,54 +51,28 @@ SandboxedProcess::~SandboxedProcess() {
   dispose();
 }
 
-void SandboxedProcess::setCallbacks(std::function<void(DWORD)> started,
-                                    std::function<void(DWORD, DWORD, bool)> exited) {
-  std::lock_guard<std::mutex> lock(cbMutex_);
-  onProcessStarted_ = std::move(started);
-  onProcessExited_ = std::move(exited);
-}
-
-void SandboxedProcess::clearCallbacks() {
-  std::lock_guard<std::mutex> lock(cbMutex_);
-  onProcessStarted_ = nullptr;
-  onProcessExited_ = nullptr;
-}
-
-void SandboxedProcess::notifyStarted(DWORD pid) {
-  std::function<void(DWORD)> fn;
-  {
-    std::lock_guard<std::mutex> lock(cbMutex_);
-    fn = onProcessStarted_;
-  }
-  if (fn) fn(pid);
-}
-
-void SandboxedProcess::notifyExited(DWORD pid, DWORD exitCode, bool abnormal) {
-  std::function<void(DWORD, DWORD, bool)> fn;
-  {
-    std::lock_guard<std::mutex> lock(cbMutex_);
-    fn = onProcessExited_;
-  }
-  if (fn) fn(pid, exitCode, abnormal);
+std::pair<uint32_t, std::string> SandboxedProcess::settleExit() {
+  DWORD code = 0;
+  GetExitCodeProcess(child_.process, &code);
+  exitCode_ = code;
+  const bool user = InterlockedCompareExchange(&userTerminated_, 0, 0) != 0;
+  const bool timedOut = InterlockedCompareExchange(&timedOut_, 0, 0) != 0;
+  const LimitKind kind = job_->limitKind();
+  // Priority: user termination > hard limit > watchdog timeout. A natural
+  // exit wins over a watchdog that raced the exit (code is settled then).
+  if (user) exitReason_ = "user";
+  else if (kind != LimitKind::None) exitReason_ = limitKindString(kind);
+  else if (timedOut) exitReason_ = "timeout";
+  else exitReason_ = "normal";
+  exited_ = true;
+  return {exitCode_, exitReason_};
 }
 
 std::pair<uint32_t, std::string> SandboxedProcess::wait() {
   if (disposed_) throw std::runtime_error("sandbox process already disposed");
   if (!exited_) {
     WaitForSingleObject(child_.process, INFINITE);
-    DWORD code = 0;
-    GetExitCodeProcess(child_.process, &code);
-    exitCode_ = code;
-    const bool user = InterlockedCompareExchange(&userTerminated_, 0, 0) != 0;
-    const bool timedOut = InterlockedCompareExchange(&timedOut_, 0, 0) != 0;
-    const LimitKind kind = job_->limitKind();
-    // Priority: user termination > hard limit > watchdog timeout. A natural
-    // exit wins over a watchdog that raced the exit (code is settled then).
-    if (user) exitReason_ = "user";
-    else if (kind != LimitKind::None) exitReason_ = limitKindString(kind);
-    else if (timedOut) exitReason_ = "timeout";
-    else exitReason_ = "normal";
-    exited_ = true;
+    return settleExit();
   }
   return {exitCode_, exitReason_};
 }
@@ -130,17 +83,7 @@ std::optional<std::pair<uint32_t, std::string>> SandboxedProcess::pollExit() {
     if (WaitForSingleObject(child_.process, 0) != WAIT_OBJECT_0) {
       return std::nullopt;
     }
-    DWORD code = 0;
-    GetExitCodeProcess(child_.process, &code);
-    exitCode_ = code;
-    const bool user = InterlockedCompareExchange(&userTerminated_, 0, 0) != 0;
-    const bool timedOut = InterlockedCompareExchange(&timedOut_, 0, 0) != 0;
-    const LimitKind kind = job_->limitKind();
-    if (user) exitReason_ = "user";
-    else if (kind != LimitKind::None) exitReason_ = limitKindString(kind);
-    else if (timedOut) exitReason_ = "timeout";
-    else exitReason_ = "normal";
-    exited_ = true;
+    return settleExit();
   }
   return std::pair<uint32_t, std::string>{exitCode_, exitReason_};
 }
@@ -151,11 +94,6 @@ void SandboxedProcess::terminate(uint32_t exitCode) {
   job_->terminateAll(exitCode);
 }
 
-bool SandboxedProcess::signalCtrlBreak() {
-  if (disposed_) return false;
-  return GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child_.pid) != 0;
-}
-
 std::vector<DWORD> SandboxedProcess::queryProcessList() {
   if (disposed_) return {};
   std::vector<DWORD> out;
@@ -163,37 +101,19 @@ std::vector<DWORD> SandboxedProcess::queryProcessList() {
   DWORD needed = 0;
   QueryInformationJobObject(job_->handle(), JobObjectBasicProcessIdList, &probe,
                             sizeof(probe), &needed);
-  if (probe.NumberOfProcessIdsInList == 0) return out;
   const DWORD count = probe.NumberOfAssignedProcesses;
+  if (count == 0) return out;
   std::vector<uint8_t> buf(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST)
                            + (count > 1 ? count - 1 : 0) * sizeof(ULONG_PTR));
   auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buf.data());
-  for (int attempt = 0; attempt < 8; attempt++) {
-    if (!QueryInformationJobObject(job_->handle(), JobObjectBasicProcessIdList, list,
-                                   static_cast<DWORD>(buf.size()), &needed)) {
-      const DWORD err = GetLastError();
-      if (err == ERROR_MORE_DATA && needed > buf.size()) {
-        buf.resize(needed);
-        continue;
-      }
-      break;
-    }
-    for (DWORD i = 0; i < list->NumberOfProcessIdsInList; i++) {
-      out.push_back(static_cast<DWORD>(list->ProcessIdList[i]));
-    }
-    break;
+  if (!QueryInformationJobObject(job_->handle(), JobObjectBasicProcessIdList, list,
+                                 static_cast<DWORD>(buf.size()), &needed)) {
+    return out;
+  }
+  for (DWORD i = 0; i < list->NumberOfProcessIdsInList; i++) {
+    out.push_back(static_cast<DWORD>(list->ProcessIdList[i]));
   }
   return out;
-}
-
-std::pair<uint32_t, bool> SandboxedProcess::queryProcessExitCode(DWORD pid) {
-  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-  if (process == nullptr) return {0, false};
-  DWORD code = 0;
-  const bool ok = GetExitCodeProcess(process, &code) != 0;
-  CloseHandle(process);
-  if (!ok) return {0, false};
-  return {code, code == STILL_ACTIVE};
 }
 
 void SandboxedProcess::dispose() {
@@ -207,7 +127,6 @@ void SandboxedProcess::dispose() {
     CloseHandle(wallClockEvent_);
     wallClockEvent_ = nullptr;
   }
-  clearCallbacks();  // no IOCP invocation may touch Python callbacks anymore
   if (job_ != nullptr) {
     // Kill the tree first, then let the primary process settle so its handle
     // is not closed while a concurrent wait() is blocked on it.
@@ -215,7 +134,7 @@ void SandboxedProcess::dispose() {
     if (child_.process != nullptr) {
       WaitForSingleObject(child_.process, 3000);
     }
-    job_->stop();  // join the IOCP thread before any callback target dies
+    job_->stop();  // join the IOCP thread
     job_.reset();
   }
   if (token_ != nullptr) {
@@ -259,10 +178,8 @@ void SandboxedProcess::dispose() {
 
 std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     const std::wstring& commandLine, const std::wstring& workingDir,
-    bool workspaceWrite, const ResourceLimits& limits, HPCON hpcon,
-    const std::map<std::wstring, std::wstring>* envOverrides) {
-  const std::vector<std::wstring> argv = splitCommandLine(commandLine);
-  if (argv.empty()) throw std::runtime_error("empty command line");
+    bool workspaceWrite, const ResourceLimits& limits, HPCON hpcon) {
+  if (!hasAnyArgument(commandLine)) throw std::runtime_error("empty command line");
   if (!workingDir.empty()) {
     const DWORD attrs = GetFileAttributesW(workingDir.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
@@ -271,6 +188,10 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     }
   }
   const Mode mode = workspaceWrite ? Mode::WorkspaceWrite : Mode::ReadOnly;
+
+  // startProcess runs with the GIL released, so two Python threads can be in
+  // here at once: the standing-grant set and the process list need the lock.
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // Materialize the workspace capability (standing) once per workspace.
   // The workspace path is normalized (no trailing separator, canonical case)
@@ -343,7 +264,7 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     // DLL-init failures were caused by the ambient temp root being denied;
     // the explicit per-run TMP/TEMP override (env block below) fixes that
     // without weakening the mechanism.
-    token = createRestrictedToken(mode, writeSids, logonSid, worldSid, true);
+    token = createRestrictedToken(mode, writeSids, logonSid, worldSid);
     setTokenDefaultDaclGrant(token, tempSidPtr != nullptr ? tempSidPtr
                                 : wsSidPtr != nullptr ? wsSidPtr : worldSid);
     // 加固宿主进程 DACL：拒绝沙箱 restricting SIDs（logon SID + Everyone）对
@@ -384,13 +305,11 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
   SpawnedChild child;
   try {
     if (hpcon != nullptr) {
-      child = spawnSandboxedConPTY(token, job->handle(), hpcon, argv[0],
-                                   std::vector<std::wstring>(argv.begin() + 1, argv.end()),
-                                   workingDir, tempDir.empty() ? nullptr : &tempDir, envOverrides);
+      child = spawnSandboxedConPTY(token, job->handle(), hpcon, commandLine, workingDir,
+                                   tempDir.empty() ? nullptr : &tempDir);
     } else {
-      child = spawnSandboxedInherited(token, job->handle(), argv[0],
-                                      std::vector<std::wstring>(argv.begin() + 1, argv.end()),
-                                      workingDir, true, tempDir.empty() ? nullptr : &tempDir, envOverrides);
+      child = spawnSandboxedInherited(token, job->handle(), commandLine, workingDir, true,
+                                      tempDir.empty() ? nullptr : &tempDir);
     }
   } catch (...) {
     if (tempSidPtr != nullptr) {
@@ -415,10 +334,14 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
 }
 
 void SandboxInstance::shutdown() {
-  for (auto& process : processes_) {
+  std::vector<std::shared_ptr<SandboxedProcess>> processes;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    processes.swap(processes_);
+  }
+  for (auto& process : processes) {
     process->dispose();
   }
-  processes_.clear();
 }
 
 }  // namespace winacl

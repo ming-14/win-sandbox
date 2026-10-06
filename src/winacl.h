@@ -13,10 +13,8 @@
 
 #include <array>
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace winacl {
@@ -65,8 +63,7 @@ PSID parseSid(const std::wstring& sddl);
 // caller owns (LocalFree); the read-only default-DACL fallback names
 // Everyone, matching the TS implementation.
 HANDLE createRestrictedToken(Mode mode, const std::vector<PSID>& writeSids,
-                             PSID& outLogonSid, PSID& outWorldSid,
-                             bool writeRestricted = true);
+                             PSID& outLogonSid, PSID& outWorldSid);
 
 // Merge a full-access ACE for `sid` into the token's default DACL so new
 // objects (anonymous pipes etc.) the confined child creates pass the
@@ -127,23 +124,12 @@ public:
   Job& operator=(const Job&) = delete;
 
   HANDLE handle() const { return job_; }
-  /** Assign a process to the job; fails closed (terminates the process). */
-  void assign(HANDLE process);
   /** Terminate every process in the job. */
   void terminateAll(uint32_t exitCode);
   /** The limit that killed the job (thread-safe read). */
   LimitKind limitKind() const;
-  /** True when the job was terminated by a hard limit. */
-  bool limitHit() const;
-  /** True when the CPU rate cap could not be applied (silent degradation). */
-  bool cpuRateFailed() { return InterlockedCompareExchange(&cpuRateFailed_, 0, 0) != 0; }
   /** Stop the IOCP thread (join). */
   void stop();
-
-  /** Invoked (IOCP thread) when a new process joins the job. */
-  std::function<void(DWORD pid)> onNewProcess;
-  /** Invoked (IOCP thread) when a process exits; abnormal = unhandled exception. */
-  std::function<void(DWORD pid, DWORD exitCode, bool abnormal)> onExitProcess;
 
 private:
   static DWORD WINAPI iocpThread(LPVOID param);
@@ -154,17 +140,12 @@ private:
   HANDLE iocp_ = nullptr;
   HANDLE iocpThread_ = nullptr;
   volatile LONG limitKind_ = static_cast<LONG>(LimitKind::None);  // LimitKind
-  mutable volatile LONG cpuRateFailed_ = 0;
   volatile LONG stopRequested_ = 0;
-  std::unordered_set<DWORD> exitedPids_;  // IOCP thread only
 };
-
-// Create a plain kill-on-close job (no limits, no IOCP) — probe path.
-HANDLE createKillOnCloseJob();
 
 // --- spawn.cpp --------------------------------------------------------------
 
-// Spawn `command` under `token` with the caller's stdio passed straight
+// Spawn `commandLine` under `token` with the caller's stdio passed straight
 // through: CREATE_SUSPENDED, assigned to `job`, then resumed. The child's
 // environment inherits the runner's (which already carries the rewritten
 // TMP/TEMP). Returns the child process handle (owned) and pid.
@@ -172,10 +153,10 @@ struct SpawnedChild {
   HANDLE process;
   DWORD pid;
 };
-SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstring& command,
-                                     const std::vector<std::wstring>& args, const std::wstring& cwd,
-                                     bool newProcessGroup, const std::wstring* tempDir = nullptr,
-                                  const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
+SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstring& commandLine,
+                                     const std::wstring& cwd, bool newProcessGroup,
+                                     const std::wstring* tempDir = nullptr,
+                                     const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
 
 // Spawn under an external ConPTY handle (hpcon): the child's stdio is driven
 // by the pseudo console, not by the launcher's handles. bInheritHandles=FALSE
@@ -185,16 +166,15 @@ SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstrin
 // console). `tempDir`, when non-null, redirects TMP/TEMP in the child's
 // environment block.
 SpawnedChild spawnSandboxedConPTY(HANDLE token, HANDLE job, HPCON hpcon,
-                                  const std::wstring& command,
-                                  const std::vector<std::wstring>& args,
+                                  const std::wstring& commandLine,
                                   const std::wstring& cwd,
                                   const std::wstring* tempDir = nullptr,
                                   const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
 
 // --- util -------------------------------------------------------------------
 
-// Quote one argv entry per CommandLineToArgvW rules (byte-compatible with the
-// TS quoteArg).
-std::wstring quoteArg(const std::wstring& argument);
+// UTF-8 <-> UTF-16 conversion for the binding boundary (implemented in sid.cpp).
+std::wstring utf8ToWide(const std::string& utf8);
+std::string wideToUtf8(const std::wstring& wide);
 
 }  // namespace winacl

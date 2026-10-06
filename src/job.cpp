@@ -60,14 +60,11 @@ Job::Job(const ResourceLimits& limits) {
 
   if (limits.cpuRatePercent > 0) {
     // 0.01% units; HARD_CAP throttles instead of notifying. Win8+; a failure
-    // degrades to no rate cap — recorded so the caller can tell (fail-open
-    // would otherwise be silent).
+    // degrades to no rate cap (fail-open).
     JOBOBJECT_CPU_RATE_CONTROL_INFORMATION cpu{};
     cpu.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
     cpu.CpuRate = limits.cpuRatePercent * 100;
-    if (!SetInformationJobObject(job_, JobObjectCpuRateControlInformation, &cpu, sizeof(cpu))) {
-      InterlockedExchange(&cpuRateFailed_, 1);
-    }
+    SetInformationJobObject(job_, JobObjectCpuRateControlInformation, &cpu, sizeof(cpu));
   }
 
   if (limits.noUi) {
@@ -105,14 +102,6 @@ Job::~Job() {
   if (job_ != nullptr) CloseHandle(job_);
 }
 
-void Job::assign(HANDLE process) {
-  if (!AssignProcessToJobObject(job_, process)) {
-    const DWORD err = GetLastError();
-    TerminateProcess(process, 1);
-    throw std::runtime_error("AssignProcessToJobObject failed (Win32 " + std::to_string(err) + ")");
-  }
-}
-
 void Job::terminateAll(uint32_t exitCode) {
   if (job_ != nullptr) TerminateJobObject(job_, exitCode);
 }
@@ -120,10 +109,6 @@ void Job::terminateAll(uint32_t exitCode) {
 LimitKind Job::limitKind() const {
   return static_cast<LimitKind>(InterlockedCompareExchange(
       const_cast<volatile LONG*>(&limitKind_), 0, 0));
-}
-
-bool Job::limitHit() const {
-  return limitKind() != LimitKind::None;
 }
 
 void Job::stop() {
@@ -188,50 +173,9 @@ void Job::handleMessage(DWORD message, DWORD pid) {
       InterlockedCompareExchange(&limitKind_, static_cast<LONG>(LimitKind::ProcessCount),
                                  static_cast<LONG>(LimitKind::None));
       break;
-    case JOB_OBJECT_MSG_NEW_PROCESS:
-      
-      if (onNewProcess) onNewProcess(pid);
-      break;
-    case JOB_OBJECT_MSG_EXIT_PROCESS:
-    case JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS:
-      // Dedup only guards the notification window; cap the set so a long-lived
-      // job spawning many short children cannot grow it without bound.
-      if (exitedPids_.size() > 8192) exitedPids_.clear();
-      if (exitedPids_.insert(pid).second) {
-        // Read the settled exit code (the process object may still be live for
-        // a brief window after the exit notification).
-        DWORD exitCode = 0;
-        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (process != nullptr) {
-          GetExitCodeProcess(process, &exitCode);
-          CloseHandle(process);
-        }
-        if (onExitProcess) {
-          
-          onExitProcess(pid, exitCode, message == JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS);
-        } else {
-          
-        }
-      }
-      break;
     default:
       break;
   }
-}
-
-HANDLE createKillOnCloseJob() {
-  HANDLE job = CreateJobObjectW(nullptr, nullptr);
-  if (job == nullptr) {
-    throw std::runtime_error("CreateJobObjectW failed (Win32 " + std::to_string(GetLastError()) + ")");
-  }
-  JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
-  info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-  if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
-    const DWORD err = GetLastError();
-    CloseHandle(job);
-    throw std::runtime_error("SetInformationJobObject(KILL_ON_JOB_CLOSE) failed (Win32 " + std::to_string(err) + ")");
-  }
-  return job;
 }
 
 }  // namespace winacl

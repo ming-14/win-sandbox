@@ -12,7 +12,6 @@
 #include <bcrypt.h>
 
 #include <array>
-#include <cstdio>
 #include <stdexcept>
 
 #pragma comment(lib, "advapi32.lib")
@@ -33,12 +32,7 @@ std::wstring lockFilePath(const std::wstring& path) {
   if (mapped == 0) throw std::runtime_error("LCMapStringW(lowercase) failed (Win32 "
                                             + std::to_string(GetLastError()) + ")");
   lower.resize(static_cast<size_t>(mapped) - 1);  // strip the copied NUL
-  const std::string utf8 = [&] {
-    const int n = WideCharToMultiByte(CP_UTF8, 0, lower.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string s(static_cast<size_t>(n) - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, lower.c_str(), -1, s.data(), n, nullptr, nullptr);
-    return s;
-  }();
+  const std::string utf8 = wideToUtf8(lower);
   // Reuse the shared SHA-256 (winacl::sha256, streaming BCrypt) on the UTF-8
   // bytes, take the first 8 bytes as 16 hex chars (matches TS slice(0,16)).
   const std::array<uint8_t, 32> digest = sha256(
@@ -83,19 +77,12 @@ void withPathLock(const std::wstring& path, F&& action) {
   }
 }
 
-struct CurrentDacl {
-  PACL acl = nullptr;
-  PSECURITY_DESCRIPTOR descriptor = nullptr;
-};
-
-CurrentDacl readCurrentDacl(const std::wstring& path) {
-  CurrentDacl out;
+void readCurrentDacl(const std::wstring& path, PACL& acl, PSECURITY_DESCRIPTOR& descriptor) {
   const DWORD rc = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-                                         nullptr, nullptr, &out.acl, nullptr, &out.descriptor);
+                                         nullptr, nullptr, &acl, nullptr, &descriptor);
   if (rc != ERROR_SUCCESS) {
     throw std::runtime_error("GetNamedSecurityInfoW failed (Win32 " + std::to_string(rc) + ")");
   }
-  return out;
 }
 
 void mergeAndApply(const std::wstring& path, const EXPLICIT_ACCESS_W& entry, PACL oldAcl,
@@ -135,9 +122,11 @@ bool hasExactGrant(PACL acl, PSID sid) {
 }
 
 void grantWriteLocked(const std::wstring& path, PSID sid) {
-  CurrentDacl current = readCurrentDacl(path);
-  if (current.acl != nullptr && hasExactGrant(current.acl, sid)) {
-    if (current.descriptor != nullptr) LocalFree(current.descriptor);
+  PACL acl = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  readCurrentDacl(path, acl, descriptor);
+  if (hasExactGrant(acl, sid)) {
+    if (descriptor != nullptr) LocalFree(descriptor);
     return;
   }
   EXPLICIT_ACCESS_W entry{};
@@ -147,15 +136,13 @@ void grantWriteLocked(const std::wstring& path, PSID sid) {
   entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
   entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
   entry.Trustee.ptstrName = reinterpret_cast<LPWCH>(sid);
-  mergeAndApply(path, entry, current.acl, current.descriptor, "grantWrite");
+  mergeAndApply(path, entry, acl, descriptor, "grantWrite");
 }
 
 void revokeWriteLocked(const std::wstring& path, PSID sid) {
-  CurrentDacl current = readCurrentDacl(path);
-  if (current.acl == nullptr) {
-    if (current.descriptor != nullptr) LocalFree(current.descriptor);
-    return;
-  }
+  PACL acl = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  readCurrentDacl(path, acl, descriptor);
   EXPLICIT_ACCESS_W entry{};
   entry.grfAccessPermissions = 0;
   entry.grfAccessMode = REVOKE_ACCESS;
@@ -163,7 +150,7 @@ void revokeWriteLocked(const std::wstring& path, PSID sid) {
   entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
   entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
   entry.Trustee.ptstrName = reinterpret_cast<LPWCH>(sid);
-  mergeAndApply(path, entry, current.acl, current.descriptor, "revokeWrite");
+  mergeAndApply(path, entry, acl, descriptor, "revokeWrite");
 }
 
 // Write-class process rights a confined child must never hold on the host:

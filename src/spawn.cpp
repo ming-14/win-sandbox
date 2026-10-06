@@ -59,54 +59,35 @@ std::vector<wchar_t> buildEnvBlock(const std::wstring* tempDir,
   return out;
 }
 
+// Fill a one-entry process/thread attribute list into a caller-owned buffer, so
+// the buffer never moves after the list pointer is derived from it.
+void buildAttributeList(std::vector<uint8_t>& buf, const void* value, SIZE_T valueSize,
+                        DWORD attribute) {
+  SIZE_T attrSize = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);  // expected ERROR_INSUFFICIENT_BUFFER
+  buf.resize(attrSize);
+  auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buf.data());
+  if (!InitializeProcThreadAttributeList(list, 1, 0, &attrSize)) {
+    throw std::runtime_error("InitializeProcThreadAttributeList failed (Win32 "
+                             + std::to_string(GetLastError()) + ")");
+  }
+  if (!UpdateProcThreadAttribute(list, 0, attribute, const_cast<void*>(value), valueSize,
+                                 nullptr, nullptr)) {
+    const DWORD err = GetLastError();
+    DeleteProcThreadAttributeList(list);
+    throw std::runtime_error("UpdateProcThreadAttribute failed (Win32 " + std::to_string(err) + ")");
+  }
+}
+
 }  // namespace
 
-std::wstring quoteArg(const std::wstring& argument) {
-  if (argument.empty()) return L"\"\"";
-  const bool needsQuotes = argument.find_first_of(L" \t\n\v\f\r\"") != std::wstring::npos;
-  if (!needsQuotes) return argument;
-  std::wstring quoted = L"\"";
-  size_t i = 0;
-  while (i < argument.size()) {
-    size_t backslashes = 0;
-    while (i < argument.size() && argument[i] == L'\\') {
-      backslashes++;
-      i++;
-    }
-    if (i == argument.size()) {
-      quoted.append(backslashes * 2, L'\\');
-    } else if (argument[i] == L'"') {
-      quoted.append(backslashes * 2 + 1, L'\\');
-      quoted.push_back(L'"');
-      i++;
-    } else {
-      quoted.append(backslashes, L'\\');
-      quoted.push_back(argument[i]);
-      i++;
-    }
-  }
-  quoted.push_back(L'"');
-  return quoted;
-}
-
-static std::wstring buildCommandLine(const std::wstring& command,
-                                     const std::vector<std::wstring>& args) {
-  std::wstring commandLine = quoteArg(command);
-  for (const std::wstring& arg : args) {
-    commandLine += L" " + quoteArg(arg);
-  }
-  return commandLine;
-}
-
-SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstring& command,
-                                     const std::vector<std::wstring>& args, const std::wstring& cwd,
-                                     bool newProcessGroup, const std::wstring* tempDir,
+SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstring& commandLine,
+                                     const std::wstring& cwd, bool newProcessGroup,
+                                     const std::wstring* tempDir,
                                      const std::map<std::wstring, std::wstring>* envOverrides) {
-  const std::wstring commandLine = buildCommandLine(command, args);
-
-  // Re-enable inheritance on the std handles for the duration of the spawn
-  // and pass them explicitly via STARTF_USESTDHANDLES; the HANDLE_LIST
-  // attribute restricts what the child inherits to exactly these three.
+  // Pass the caller's std handles straight through via STARTF_USESTDHANDLES;
+  // the HANDLE_LIST attribute restricts what the child inherits to exactly
+  // these three, so no stray inheritable handle leaks into the confined child.
   HANDLE stdIn = GetStdHandle(STD_INPUT_HANDLE);
   HANDLE stdOut = GetStdHandle(STD_OUTPUT_HANDLE);
   HANDLE stdErr = GetStdHandle(STD_ERROR_HANDLE);
@@ -114,43 +95,16 @@ SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstrin
       || stdOut == INVALID_HANDLE_VALUE || stdErr == nullptr || stdErr == INVALID_HANDLE_VALUE) {
     throw std::runtime_error("GetStdHandle returned an invalid handle");
   }
-  struct InheritGuard {
-    HANDLE in, out, err;
-    ~InheritGuard() {
-      SetHandleInformation(in, HANDLE_FLAG_INHERIT, 0);
-      SetHandleInformation(out, HANDLE_FLAG_INHERIT, 0);
-      SetHandleInformation(err, HANDLE_FLAG_INHERIT, 0);
-    }
-  };
-  if (!SetHandleInformation(stdIn, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
-      || !SetHandleInformation(stdOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
-      || !SetHandleInformation(stdErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
-    throw std::runtime_error("SetHandleInformation(inherit) failed (Win32 "
-                             + std::to_string(GetLastError()) + ")");
-  }
-  InheritGuard inheritGuard{stdIn, stdOut, stdErr};
 
-  // Attribute list: HANDLE_LIST whitelist (std handles only). The attribute
-  // list must be allocated before STARTUPINFOEXW is filled.
-  SIZE_T attrSize = 0;
-  InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);  // expected ERROR_INSUFFICIENT_BUFFER
-  std::vector<uint8_t> attrBuf(attrSize);
+  HANDLE handles[] = {stdIn, stdOut, stdErr};
+  std::vector<uint8_t> attrBuf;
+  buildAttributeList(attrBuf, handles, sizeof(handles), PROC_THREAD_ATTRIBUTE_HANDLE_LIST);
   LPPROC_THREAD_ATTRIBUTE_LIST attrList =
       reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuf.data());
-  if (!InitializeProcThreadAttributeList(attrList, 1, 0, &attrSize)) {
-    throw std::runtime_error("InitializeProcThreadAttributeList failed (Win32 "
-                             + std::to_string(GetLastError()) + ")");
-  }
   struct AttrGuard {
     LPPROC_THREAD_ATTRIBUTE_LIST list;
     ~AttrGuard() { DeleteProcThreadAttributeList(list); }
   } attrGuard{attrList};
-  HANDLE handles[] = {stdIn, stdOut, stdErr};
-  if (!UpdateProcThreadAttribute(attrList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                 handles, sizeof(handles), nullptr, nullptr)) {
-    throw std::runtime_error("UpdateProcThreadAttribute(HANDLE_LIST) failed (Win32 "
-                             + std::to_string(GetLastError()) + ")");
-  }
 
   STARTUPINFOEXW siex{};
   siex.StartupInfo.cb = sizeof(siex);
@@ -164,8 +118,7 @@ SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstrin
 
   PROCESS_INFORMATION pi{};
   // CREATE_NEW_PROCESS_GROUP: makes the child the head of its own process
-  // group so control-channel ctrl_break can be directed at it (a confined
-  // child shares the host console).
+  // group (a confined child shares the host console).
   const DWORD creationFlags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
                               | EXTENDED_STARTUPINFO_PRESENT
                               | (newProcessGroup ? CREATE_NEW_PROCESS_GROUP : 0);
@@ -176,7 +129,7 @@ SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstrin
 
   if (!created) {
     throw std::runtime_error("CreateProcessAsUserW failed (Win32 " + std::to_string(GetLastError())
-                             + ") for command: " + std::string(commandLine.begin(), commandLine.end()));
+                             + ") for command: " + wideToUtf8(commandLine));
   }
 
   // The child is suspended and NOT yet in the kill-on-close job: any failure
@@ -200,36 +153,23 @@ SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstrin
 }
 
 SpawnedChild spawnSandboxedConPTY(HANDLE token, HANDLE job, HPCON hpcon,
-                                  const std::wstring& command,
-                                  const std::vector<std::wstring>& args,
+                                  const std::wstring& commandLine,
                                   const std::wstring& cwd, const std::wstring* tempDir,
                                   const std::map<std::wstring, std::wstring>* envOverrides) {
-  const std::wstring commandLine = buildCommandLine(command, args);
-
-  // Attribute list with exactly the PSEUDOCONSOLE attribute (lpValue is the
-  // HPCON value itself, not its address). The child's stdio is allocated by
-  // the ConPTY host; STARTF_USESTDHANDLES must still be set with NULL
-  // handles or the stdio copy path is not activated and the pseudo console
-  // is ignored under CreateProcessAsUserW (win-sandbox's empirical finding).
-  SIZE_T attrSize = 0;
-  InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);  // expected ERROR_INSUFFICIENT_BUFFER
-  std::vector<uint8_t> attrBuf(attrSize);
+  // The attribute list carries exactly the PSEUDOCONSOLE attribute (lpValue is
+  // the HPCON value itself, not its address).
+  std::vector<uint8_t> attrBuf;
+  buildAttributeList(attrBuf, hpcon, sizeof(HPCON), PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE);
   LPPROC_THREAD_ATTRIBUTE_LIST attrList =
       reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuf.data());
-  if (!InitializeProcThreadAttributeList(attrList, 1, 0, &attrSize)) {
-    throw std::runtime_error("InitializeProcThreadAttributeList failed (Win32 "
-                             + std::to_string(GetLastError()) + ")");
-  }
   struct AttrGuard {
     LPPROC_THREAD_ATTRIBUTE_LIST list;
     ~AttrGuard() { DeleteProcThreadAttributeList(list); }
   } guard{attrList};
-  if (!UpdateProcThreadAttribute(attrList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                                 hpcon, sizeof(HPCON), nullptr, nullptr)) {
-    throw std::runtime_error("UpdateProcThreadAttribute(PSEUDOCONSOLE) failed (Win32 "
-                             + std::to_string(GetLastError()) + ")");
-  }
 
+  // STARTF_USESTDHANDLES must still be set with NULL handles or the stdio copy
+  // path is not activated and the pseudo console is ignored under
+  // CreateProcessAsUserW (win-sandbox's empirical finding).
   STARTUPINFOEXW siex{};
   siex.StartupInfo.cb = sizeof(siex);
   siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;

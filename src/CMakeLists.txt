@@ -8,16 +8,15 @@
 #        reads pyproject.toml at project root, uses this dir as cmake.source-dir
 #
 # Requires nanobind (pip install nanobind) and a Visual Studio toolchain.
-# Uses nanobind split mode (BACKEND_MODULE) to produce a stable ABI (abi3)
-# extension that works across Python 3.10+ without recompilation.
-# The runtime 'nanobind-backend' package provides the backend module.
+# Builds one self-contained stable-ABI (abi3) extension that works across
+# Python 3.10+ without recompilation and without a runtime backend package.
 cmake_minimum_required(VERSION 3.20)
 project(win_sandbox_native LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# --- Find Python (SABIModule required for split mode on Windows) ---
+# --- Find Python (SABIModule = the stable-ABI variant of Development.Module) ---
 find_package(Python COMPONENTS Interpreter Development.Module Development.SABIModule REQUIRED)
 
 # --- Find nanobind (pip install nanobind provides the CMake config) ---
@@ -33,11 +32,12 @@ set(CORE_SOURCES
   module.cpp
 )
 
-# Split mode: the extension module loads the backend from 'nanobind-backend'
-# at runtime. This produces a stable ABI (abi3) extension compatible with
-# Python 3.10+ (floor set by wheel.py-api = "cp310" in pyproject.toml).
+# abi3: STABLE_ABI + NB_STATIC link the nanobind backend into the module, so
+# the wheel is self-contained (no runtime 'nanobind-backend' dependency) and
+# compatible with Python 3.10+ (floor set by wheel.py-api = "cp310").
 nanobind_add_module(win_sandbox_native
-  BACKEND_MODULE nanobind_backend
+  STABLE_ABI
+  NB_STATIC
   ${CORE_SOURCES}
 )
 
@@ -51,5 +51,5 @@ endif()
 # === Wheel 安装规则（供 scikit-build-core 打包时使用） ===
 # 扩展模块安装到 win_sandbox/_native/，与 __init__.py 的加载路径对齐
 install(TARGETS win_sandbox_native DESTINATION win_sandbox/_native)
-# Python 包装文件（__init__.py / exceptions.py / helpers.py）安装到 win_sandbox/
+# Python 包装（__init__.py）安装到 win_sandbox/
 install(DIRECTORY python/win_sandbox/ DESTINATION win_sandbox)

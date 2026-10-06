@@ -49,7 +49,6 @@ Desktop.ini
 ehthumbs.db
 
 # ===================== 测试临时文件 =====================
-node_modules/
 *.tmp
 *.bak
 *.orig

@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 name = "win-sandbox"
 version = "1.0.0"
 description = "Windows process sandbox: WRITE_RESTRICTED token + capability-SID write allowlist + Job resource limits"
-readme = "docs/FILESTREE.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "License" }
 authors = [{ name = "ming-14" }]
@@ -18,9 +18,6 @@ classifiers = [
   "Operating System :: Microsoft :: Windows",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-# split mode（nanobind_backend）运行期需要 backend 模块
-dependencies = ["nanobind-backend>=1.0"]
-
 [project.urls]
 Homepage = "https://github.com/ming-14/PTY-Agent"
 

@@ -68,7 +68,7 @@ PSID makeWellKnownSid(WELL_KNOWN_SID_TYPE type) {
 
 }  // namespace
 
-HANDLE createRestrictedToken(Mode mode, const std::vector<PSID>& writeSids, PSID& outLogonSid, PSID& outWorldSid, bool writeRestricted) {
+HANDLE createRestrictedToken(Mode mode, const std::vector<PSID>& writeSids, PSID& outLogonSid, PSID& outWorldSid) {
   HANDLE current = openCurrentProcessToken();
   PSID logonSid = nullptr;
   PSID worldSid = nullptr;
@@ -92,7 +92,7 @@ HANDLE createRestrictedToken(Mode mode, const std::vector<PSID>& writeSids, PSID
     for (PSID sid : restricting) {
       list.push_back(SID_AND_ATTRIBUTES{sid, 0});
     }
-    if (!CreateRestrictedToken(current, writeRestricted ? kRestrictFlags : (DISABLE_MAX_PRIVILEGE | LUA_TOKEN), 0, nullptr, 0, nullptr,
+    if (!CreateRestrictedToken(current, kRestrictFlags, 0, nullptr, 0, nullptr,
                                static_cast<DWORD>(list.size()), list.data(), &restricted)
         || restricted == nullptr) {
       throw std::runtime_error("CreateRestrictedToken failed (Win32 " + std::to_string(GetLastError()) + ")");

@@ -13,14 +13,14 @@
 #include "winacl.h"
 
 #include <atomic>
-#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <string>
 #include <thread>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace winacl {
@@ -40,14 +40,11 @@ inline const char* limitKindString(LimitKind kind) {
 
 /**
  * One confined run: the spawned primary process plus its job, token, private
- * temp directory, and settled exit facts. The job's IOCP thread delivers
- * process-tree notifications through the installed callbacks.
+ * temp directory, and settled exit facts.
  *
  * Ownership: SandboxInstance keeps a shared_ptr per process; PyProcess holds
  * another. The object survives shutdown (disposed) so Python wrappers never
- * dangle. Callbacks are installed/cleared under cbMutex_ (the IOCP thread
- * reads them under the same lock); PyProcess clears them in its destructor
- * (which runs under the GIL), so a GC'd wrapper cannot be invoked after death.
+ * dangle.
  */
 class SandboxedProcess {
 public:
@@ -60,35 +57,22 @@ public:
   DWORD pid() const { return child_.pid; }
   bool disposed() const { return disposed_.load(); }
 
-  /** Install the process-tree callbacks (thread-safe vs IOCP thread). */
-  void setCallbacks(std::function<void(DWORD)> started,
-                    std::function<void(DWORD, DWORD, bool)> exited);
-  /** Clear the callbacks (called from the PyProcess destructor). */
-  void clearCallbacks();
-
   /** Block until the primary process exits; returns (exit code, reason). */
   std::pair<uint32_t, std::string> wait();
   /** Non-blocking probe: settled (exit code, reason) or nullopt while running. */
   std::optional<std::pair<uint32_t, std::string>> pollExit();
   /** Terminate the whole job (reason = user). */
   void terminate(uint32_t exitCode = 1);
-  /** Send CTRL_BREAK to the child's process group (requires process-group head). */
-  bool signalCtrlBreak();
   /** Live process ids in the job. */
   std::vector<DWORD> queryProcessList();
-  /** (exit code, still active) for one job pid. */
-  std::pair<uint32_t, bool> queryProcessExitCode(DWORD pid);
   /** Release handles, revoke the self-managed temp grant, remove the temp dir.
    *  Idempotent; after this the object answers no live queries. */
   void dispose();
 
 private:
-  void notifyStarted(DWORD pid);
-  void notifyExited(DWORD pid, DWORD exitCode, bool abnormal);
+  /** Read the settled exit code and classify why the run ended. */
+  std::pair<uint32_t, std::string> settleExit();
 
-  std::mutex cbMutex_;
-  std::function<void(DWORD)> onProcessStarted_;
-  std::function<void(DWORD, DWORD, bool)> onProcessExited_;
   std::atomic<bool> disposed_{false};
   bool exited_ = false;
   uint32_t exitCode_ = 0;
@@ -120,7 +104,7 @@ public:
 
   /**
    * Spawn one confined process.
-   * @param commandLine - full command line (CommandLineToArgvW split inside).
+   * @param commandLine - full command line (CreateProcessAsUserW splits it).
    * @param workingDir - workspace root (must exist; becomes the workspace).
    * @param workspaceWrite - true = workspace-write, false = read-only.
    * @param limits - resource limits (zeros = unlimited).
@@ -131,12 +115,12 @@ public:
                                                  const std::wstring& workingDir,
                                                  bool workspaceWrite,
                                                  const ResourceLimits& limits,
-                                                 HPCON hpcon = nullptr,
-                                                 const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
+                                                 HPCON hpcon = nullptr);
   /** Dispose all processes, revoke temp grants, remove temp dirs. */
   void shutdown();
 
 private:
+  std::mutex mutex_;  // guards both members; startProcess runs without the GIL
   std::set<std::wstring> grantedWorkspaces_;
   std::vector<std::shared_ptr<SandboxedProcess>> processes_;
 };
