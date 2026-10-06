@@ -20,9 +20,11 @@ code, reason = proc.wait()
 sb.shutdown()
 ```
 
-`start_process` 参数：`command_line`（整条命令行）、`working_dir`（工作区根目录，
-必须存在）、`workspace_write`（True = 可写，False = 只读）、`quota`（资源配额，
-见下）、`hpcon`（外部 ConPTY 句柄，默认 None = 继承 stdio）。
+`start_process` 参数：`command_line`（整条命令行，原样交给
+`CreateProcessAsUserW`）、`working_dir`（工作区根目录，必须存在）、
+`workspace_write`（True = 可写，False = 只读）、`quota`（资源配额，见下）、
+`hpcon`（外部 ConPTY 句柄，默认 None = 继承 stdio）、`env`（追加/覆盖子进程环境
+变量，默认空）。
 
 `Process` 接口：`pid`、`wait()` → `(exit_code, reason)`、`poll_exit()`（未结束返回
 None）、`terminate(exit_code=1)`、`query_process_list()`。
@@ -33,6 +35,18 @@ None）、`terminate(exit_code=1)`、`query_process_list()`。
 
 `reason` 取值：`normal` / `user` / `timeout` / `cpu_limit` / `memory_limit` /
 `process_count_limit`。
+
+## 示例
+
+`examples/tk_console.py` —— Tk 控制台，把上面所有入参搬上界面，默认开一个新 cmd
+窗口跑命令。面板只当遥控器，不接管标准句柄。
+
+```
+python examples/tk_console.py
+```
+
+**必须用 `python`，不能用 `pythonw`**：默认路径继承面板的标准句柄，而 `pythonw`
+是 GUI 子系统、没有控制台，那条路径会抛 `GetStdHandle returned an invalid handle`。
 
 ## 构建
 
@@ -62,7 +76,8 @@ src/
 ├── module.cpp        # nanobind 绑定（SandboxInstance / Process）
 ├── selftest.cpp      # 独立 C++ 自测入口（build.py --selftest）
 └── python/win_sandbox/__init__.py
-tests/smoke.py        # 跨架构冒烟测试（CI 与本地通用）
+examples/tk_console.py  # Tk 控制台示例
+tests/smoke.py          # 跨架构冒烟测试（CI 与本地通用）
 ```
 
 调用链：`module.cpp` 暴露 `SandboxInstance.start_process` → `instance.cpp` 物化

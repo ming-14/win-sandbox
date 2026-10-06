@@ -178,7 +178,8 @@ void SandboxedProcess::dispose() {
 
 std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     const std::wstring& commandLine, const std::wstring& workingDir,
-    bool workspaceWrite, const ResourceLimits& limits, HPCON hpcon) {
+    bool workspaceWrite, const ResourceLimits& limits, HPCON hpcon,
+    const std::map<std::wstring, std::wstring>* envOverrides) {
   if (!hasAnyArgument(commandLine)) throw std::runtime_error("empty command line");
   if (!workingDir.empty()) {
     const DWORD attrs = GetFileAttributesW(workingDir.c_str());
@@ -306,10 +307,10 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
   try {
     if (hpcon != nullptr) {
       child = spawnSandboxedConPTY(token, job->handle(), hpcon, commandLine, workingDir,
-                                   tempDir.empty() ? nullptr : &tempDir);
+                                   tempDir.empty() ? nullptr : &tempDir, envOverrides);
     } else {
       child = spawnSandboxedInherited(token, job->handle(), commandLine, workingDir, true,
-                                      tempDir.empty() ? nullptr : &tempDir);
+                                      tempDir.empty() ? nullptr : &tempDir, envOverrides);
     }
   } catch (...) {
     if (tempSidPtr != nullptr) {

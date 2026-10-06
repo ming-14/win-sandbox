@@ -112,9 +112,7 @@ enum class LimitKind { None, Cpu, Memory, ProcessCount, Timeout, User };
  * One confined run's job: created with the resource limits, associated with
  * an IOCP whose thread terminates the whole job on a hard-limit notification
  * (END_OF_JOB_TIME / PROCESS_MEMORY_LIMIT / JOB_MEMORY_LIMIT) — Windows does
- * NOT auto-kill on limit notifications, so the handling side must. Process
- * tree notifications (NEW_PROCESS / EXIT_PROCESS) are forwarded to the
- * installed callbacks (in-process consumers).
+ * NOT auto-kill on limit notifications, so the handling side must.
  */
 class Job {
 public:

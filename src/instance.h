@@ -109,13 +109,15 @@ public:
    * @param workspaceWrite - true = workspace-write, false = read-only.
    * @param limits - resource limits (zeros = unlimited).
    * @param hpcon - external pseudo console handle, or nullptr for pipe stdio.
+   * @param envOverrides - extra child environment entries (may be null).
    * @returns the process object (shared ownership: instance + PyProcess).
    */
   std::shared_ptr<SandboxedProcess> startProcess(const std::wstring& commandLine,
                                                  const std::wstring& workingDir,
                                                  bool workspaceWrite,
                                                  const ResourceLimits& limits,
-                                                 HPCON hpcon = nullptr);
+                                                 HPCON hpcon = nullptr,
+                                                 const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
   /** Dispose all processes, revoke temp grants, remove temp dirs. */
   void shutdown();
 

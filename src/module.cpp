@@ -10,6 +10,7 @@
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/list.h>
+#include <map>
 
 #include "instance.h"
 
@@ -93,7 +94,8 @@ public:
                           const std::string& working_dir,
                           bool workspace_write,
                           const nb::dict& quota,
-                          nb::object hpcon) {
+                          nb::object hpcon,
+                          const nb::dict& env) {
     // Parse quota BEFORE releasing the GIL — the nb::dict must not be
     // touched from a thread that doesn't hold the GIL.
     winacl::ResourceLimits limits;
@@ -102,13 +104,24 @@ public:
     if (!hpcon.is_none()) {
       conpty = reinterpret_cast<HPCON>(nb::cast<uint64_t>(hpcon));
     }
+    // Parse env overrides into a C++ map BEFORE releasing the GIL.
+    std::map<std::wstring, std::wstring> envOverrides;
+    if (!env.is_none()) {
+      for (const auto& item : env) {
+        auto key = nb::borrow(item.first);
+        auto val = nb::borrow(item.second);
+        envOverrides[winacl::utf8ToWide(nb::cast<std::string>(key))] =
+            winacl::utf8ToWide(nb::cast<std::string>(val));
+      }
+    }
     std::shared_ptr<winacl::SandboxedProcess> process;
     {
       nb::gil_scoped_release release;
       try {
         process = instance_.startProcess(
             winacl::utf8ToWide(command_line), winacl::utf8ToWide(working_dir),
-            workspace_write, limits, conpty);
+            workspace_write, limits, conpty,
+            envOverrides.empty() ? nullptr : &envOverrides);
       } catch (const std::exception& e) {
         nb::gil_scoped_acquire acquire;
         PyErr_SetString(PyExc_RuntimeError, e.what());
@@ -168,6 +181,6 @@ NB_MODULE(win_sandbox_native, m) {
       .def("start_process", &PySandboxInstance::start_process,
            nb::arg("command_line"), nb::arg("working_dir"),
            nb::arg("workspace_write") = true, nb::arg("quota") = nb::dict(),
-           nb::arg("hpcon") = nb::none())
+           nb::arg("hpcon") = nb::none(), nb::arg("env") = nb::dict())
       .def("shutdown", &PySandboxInstance::shutdown);
 }
