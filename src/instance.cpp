@@ -177,8 +177,13 @@ void SandboxedProcess::dispose() {
 std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     const std::wstring& commandLine, const std::wstring& workingDir,
     bool workspaceWrite, const ResourceLimits& limits, HPCON hpcon,
-    const std::map<std::wstring, std::wstring>* envOverrides) {
+    const std::map<std::wstring, std::wstring>* envOverrides, bool pipeStdio) {
   if (!hasAnyArgument(commandLine)) throw std::runtime_error("empty command line");
+  // A pseudo console drives the child's stdio itself; asking for pipes on top
+  // is a caller bug, not a preference to resolve silently.
+  if (hpcon != nullptr && pipeStdio) {
+    throw std::runtime_error("hpcon and pipeStdio are mutually exclusive");
+  }
   if (!workingDir.empty()) {
     const DWORD attrs = GetFileAttributesW(workingDir.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
@@ -295,17 +300,20 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     throw;
   }
 
-  // Spawn (ConPTY path when an HPCON is supplied; the handle is valid in this
-  // process by construction). The child environment is built explicitly with
-  // TMP/TEMP pointing at the granted private temp directory: the child's DLL
-  // initialization writes temporary files, and the WRITE_RESTRICTED
-  // intersection would deny the ambient temp root. The host environment is
-  // never modified (concurrent startProcess calls cannot race).
+  // Spawn (ConPTY when an HPCON is supplied; otherwise the launcher's own std
+  // handles or, with pipeStdio, three pipes of our own). The child environment
+  // is built explicitly with TMP/TEMP pointing at the granted private temp
+  // directory: the child's DLL initialization writes temporary files, and the
+  // WRITE_RESTRICTED intersection would deny the ambient temp root. The host
+  // environment is never modified (concurrent startProcess calls cannot race).
   SpawnedChild child;
   try {
     if (hpcon != nullptr) {
       child = spawnSandboxedConPTY(token, job->handle(), hpcon, commandLine, workingDir,
                                    &tempDir, envOverrides);
+    } else if (pipeStdio) {
+      child = spawnSandboxedPiped(token, job->handle(), commandLine, workingDir, true,
+                                  &tempDir, envOverrides);
     } else {
       child = spawnSandboxedInherited(token, job->handle(), commandLine, workingDir, true,
                                       &tempDir, envOverrides);

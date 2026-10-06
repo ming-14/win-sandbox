@@ -1,11 +1,13 @@
 // instance.h — in-process sandbox instance and per-process handle.
 //
-// The pybind11-facing core: SandboxInstance materializes the workspace/temp
+// The nanobind-facing core: SandboxInstance materializes the workspace/temp
 // capability grants, builds the WRITE_RESTRICTED token, and spawns confined
 // processes under a Job with optional resource limits. SandboxedProcess owns
 // one confined run's handles (process/token/job/private temp) and answers
-// wait/terminate/signal/process-tree queries in-process — no IPC, no pipes,
-// no protocol lines. An external HPCON is usable directly because the pseudo
+// wait/terminate/signal/process-tree queries in-process — no IPC, no protocol
+// lines. Stdio comes from one of three shapes: the launcher's own std handles,
+// three pipes created here (their parent ends come back on the process object),
+// or an external HPCON. An external HPCON is usable directly because the pseudo
 // console is created by the host process (the same process that calls
 // CreateProcessAsUserW).
 #pragma once
@@ -66,7 +68,16 @@ public:
   void terminate(uint32_t exitCode = 1);
   /** Live process ids in the job. */
   std::vector<DWORD> queryProcessList();
-  /** Release handles, revoke the temp grant, remove the temp dir.
+
+  /** The parent's end of the pipes: what to write the child's stdin with and
+   *  what to read its stdout/stderr from. Nullptr unless the run was spawned
+   *  with pipes — and the caller owns them from that moment on. */
+  HANDLE stdInWrite() const { return child_.stdInWrite; }
+  HANDLE stdOutRead() const { return child_.stdOutRead; }
+  HANDLE stdErrRead() const { return child_.stdErrRead; }
+
+  /** Release handles, revoke the temp grant, remove the temp dir. The pipe
+   *  ends above belong to the caller and are left untouched.
    *  Idempotent; after this the object answers no live queries. */
   void dispose();
 
@@ -110,16 +121,20 @@ public:
    *                         read-only workspace. Either way the run gets its
    *                         own writable private temp directory.
    * @param limits - resource limits (zeros = unlimited).
-   * @param hpcon - external pseudo console handle, or nullptr for pipe stdio.
-   * @param envOverrides - extra child environment entries (may be null).
+   * @param hpcon - external pseudo console handle, or nullptr to use one of the
+   *                two handle shapes below.
+   * @param envOverrides - child environment entries; an entry whose name is
+   *                      already present replaces it (may be null).
+   * @param pipeStdio - with hpcon null: hand the child three anonymous pipes
+   *                    instead of the launcher's own std handles. The parent's
+   *                    ends come back on the process object.
    * @returns the process object (shared ownership: instance + PyProcess).
    */
-  std::shared_ptr<SandboxedProcess> startProcess(const std::wstring& commandLine,
-                                                 const std::wstring& workingDir,
-                                                 bool workspaceWrite,
-                                                 const ResourceLimits& limits,
-                                                 HPCON hpcon = nullptr,
-                                                 const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
+  std::shared_ptr<SandboxedProcess> startProcess(
+      const std::wstring& commandLine, const std::wstring& workingDir, bool workspaceWrite,
+      const ResourceLimits& limits, HPCON hpcon = nullptr,
+      const std::map<std::wstring, std::wstring>* envOverrides = nullptr,
+      bool pipeStdio = false);
   /** Dispose all processes, revoke temp grants, remove temp dirs. */
   void shutdown();
 

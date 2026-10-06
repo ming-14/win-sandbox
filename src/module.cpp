@@ -4,7 +4,7 @@
 // (stable-ABI-compatible binding layer). The C++ core
 // (WRITE_RESTRICTED token + capability-SID write allowlist + Job resource
 // limits) loads into the Python interpreter process, so handles (HPCON
-// included) are shared directly — no IPC, no pipes, no protocol lines.
+// included) are shared directly — no IPC, no protocol lines.
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/pair.h>
@@ -72,7 +72,18 @@ public:
     return out;
   }
 
+  // The parent's end of the pipes (only when the run was spawned with
+  // pipe_stdio=True; 0 otherwise). Returned as plain handle values: they belong
+  // to the caller, which is expected to turn them into fds or close them.
+  uint64_t stdin_handle() const { return handleValue(process_->stdInWrite()); }
+  uint64_t stdout_handle() const { return handleValue(process_->stdOutRead()); }
+  uint64_t stderr_handle() const { return handleValue(process_->stdErrRead()); }
+
 private:
+  static uint64_t handleValue(HANDLE handle) {
+    return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));
+  }
+
   std::shared_ptr<winacl::SandboxedProcess> process_;
 };
 
@@ -95,7 +106,8 @@ public:
                           bool workspace_write,
                           const nb::dict& quota,
                           nb::object hpcon,
-                          const nb::dict& env) {
+                          const nb::dict& env,
+                          bool pipe_stdio) {
     // Parse quota BEFORE releasing the GIL — the nb::dict must not be
     // touched from a thread that doesn't hold the GIL.
     winacl::ResourceLimits limits;
@@ -121,7 +133,7 @@ public:
         process = instance_.startProcess(
             winacl::utf8ToWide(command_line), winacl::utf8ToWide(working_dir),
             workspace_write, limits, conpty,
-            envOverrides.empty() ? nullptr : &envOverrides);
+            envOverrides.empty() ? nullptr : &envOverrides, pipe_stdio);
       } catch (const std::exception& e) {
         nb::gil_scoped_acquire acquire;
         PyErr_SetString(PyExc_RuntimeError, e.what());
@@ -174,13 +186,17 @@ NB_MODULE(win_sandbox_native, m) {
       .def("wait", &PyProcess::wait)
       .def("poll_exit", &PyProcess::poll_exit)
       .def("terminate", &PyProcess::terminate, nb::arg("exit_code") = 1)
-      .def("query_process_list", &PyProcess::query_process_list);
+      .def("query_process_list", &PyProcess::query_process_list)
+      .def_prop_ro("stdin_handle", &PyProcess::stdin_handle)
+      .def_prop_ro("stdout_handle", &PyProcess::stdout_handle)
+      .def_prop_ro("stderr_handle", &PyProcess::stderr_handle);
 
   nb::class_<PySandboxInstance>(m, "SandboxInstance")
       .def(nb::init<>())
       .def("start_process", &PySandboxInstance::start_process,
            nb::arg("command_line"), nb::arg("working_dir"),
            nb::arg("workspace_write") = true, nb::arg("quota") = nb::dict(),
-           nb::arg("hpcon") = nb::none(), nb::arg("env") = nb::dict())
+           nb::arg("hpcon") = nb::none(), nb::arg("env") = nb::dict(),
+           nb::arg("pipe_stdio") = false)
       .def("shutdown", &PySandboxInstance::shutdown);
 }

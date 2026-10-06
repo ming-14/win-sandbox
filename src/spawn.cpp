@@ -1,11 +1,11 @@
 // spawn.cpp — spawn the confined child under the restricted token.
 //
-// Both spawn paths build the child's environment block explicitly from the
-// host environment with TMP/TEMP redirected to the granted private temp
-// directory (when supplied) — the host environment is never modified, so
-// concurrent spawns cannot race. The inherited path additionally whitelists
-// exactly the three std handles via PROC_THREAD_ATTRIBUTE_HANDLE_LIST so no
-// stray inheritable handle leaks into the confined child.
+// Three stdio shapes share one spawn core (`spawnWithStdio`): the caller's own
+// std handles (inherited), three anonymous pipes created here, or an external
+// HPCON driving a pseudo console. Every shape builds the child's environment
+// block explicitly from the host environment with TMP/TEMP redirected to the
+// granted private temp directory — the host environment is never modified, so
+// concurrent spawns cannot race.
 #include "winacl.h"
 
 #include <wincon.h>
@@ -18,9 +18,12 @@ namespace winacl {
 namespace {
 
 // Copy the host environment block, replacing TMP/TEMP with the private temp
-// directory when one is supplied. Returns a double-NUL-terminated block.
+// directory when one is supplied and then applying the caller's overrides. A
+// later entry for a name already present (matched case-insensitively, the way
+// Windows resolves environment names) replaces the earlier one in place, so an
+// override really overrides. Returns a double-NUL-terminated block.
 std::vector<wchar_t> buildEnvBlock(const std::wstring* tempDir,
-                                       const std::map<std::wstring, std::wstring>* overrides) {
+                                   const std::map<std::wstring, std::wstring>* overrides) {
   struct EnvGuard {
     LPWCH env;
     ~EnvGuard() { FreeEnvironmentStringsW(env); }
@@ -31,29 +34,47 @@ std::vector<wchar_t> buildEnvBlock(const std::wstring* tempDir,
                              + std::to_string(GetLastError()) + ")");
   }
   EnvGuard guard{env};
-  std::vector<wchar_t> out;
-  for (LPWCH p = env; *p != L'\0'; p += wcslen(p) + 1) {
-    const std::wstring entry(p);
-    const bool isTmp = entry.rfind(L"TMP=", 0) == 0 || entry.rfind(L"TEMP=", 0) == 0;
-    if (tempDir != nullptr && isTmp) {
-      continue;  // replaced below (both TMP and TEMP point at the same dir)
+
+  auto upper = [](const std::wstring& text) {
+    std::wstring out(text.size(), L'\0');
+    if (!text.empty()) {
+      LCMapStringW(LOCALE_INVARIANT, LCMAP_UPPERCASE, text.c_str(),
+                   static_cast<int>(text.size()), out.data(), static_cast<int>(out.size()));
     }
-    out.insert(out.end(), p, p + wcslen(p) + 1);
-  }
+    return out;
+  };
+
+  std::vector<std::wstring> entries;
+  std::map<std::wstring, size_t> position;  // upper-cased name -> index in entries
+  auto upsert = [&](const std::wstring& entry) {
+    // Drive-current-directory entries ("=C:=...") carry no name to match on.
+    if (entry.empty() || entry[0] == L'=') {
+      entries.push_back(entry);
+      return;
+    }
+    const std::wstring name = upper(entry.substr(0, entry.find(L'=')));
+    const auto existing = position.find(name);
+    if (existing != position.end()) {
+      entries[existing->second] = entry;  // override in place
+      return;
+    }
+    position.emplace(name, entries.size());
+    entries.push_back(entry);
+  };
+
+  for (LPWCH p = env; *p != L'\0'; p += wcslen(p) + 1) upsert(p);
   if (tempDir != nullptr) {
-    const std::wstring tmp = L"TMP=" + *tempDir;
-    const std::wstring temp = L"TEMP=" + *tempDir;
-    out.insert(out.end(), tmp.begin(), tmp.end());
-    out.push_back(L'\0');
-    out.insert(out.end(), temp.begin(), temp.end());
-    out.push_back(L'\0');
+    upsert(L"TMP=" + *tempDir);
+    upsert(L"TEMP=" + *tempDir);
   }
   if (overrides != nullptr) {
-    for (const auto& [key, value] : *overrides) {
-      const std::wstring entry = key + L"=" + value;
-      out.insert(out.end(), entry.begin(), entry.end());
-      out.push_back(L'\0');
-    }
+    for (const auto& [key, value] : *overrides) upsert(key + L"=" + value);
+  }
+
+  std::vector<wchar_t> out;
+  for (const auto& entry : entries) {
+    out.insert(out.end(), entry.begin(), entry.end());
+    out.push_back(L'\0');
   }
   out.push_back(L'\0');
   return out;
@@ -79,23 +100,16 @@ void buildAttributeList(std::vector<uint8_t>& buf, const void* value, SIZE_T val
   }
 }
 
-}  // namespace
-
-SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstring& commandLine,
-                                     const std::wstring& cwd, bool newProcessGroup,
-                                     const std::wstring* tempDir,
-                                     const std::map<std::wstring, std::wstring>* envOverrides) {
-  // Pass the caller's std handles straight through via STARTF_USESTDHANDLES;
-  // the HANDLE_LIST attribute restricts what the child inherits to exactly
-  // these three, so no stray inheritable handle leaks into the confined child.
-  HANDLE stdIn = GetStdHandle(STD_INPUT_HANDLE);
-  HANDLE stdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-  HANDLE stdErr = GetStdHandle(STD_ERROR_HANDLE);
-  if (stdIn == nullptr || stdIn == INVALID_HANDLE_VALUE || stdOut == nullptr
-      || stdOut == INVALID_HANDLE_VALUE || stdErr == nullptr || stdErr == INVALID_HANDLE_VALUE) {
-    throw std::runtime_error("GetStdHandle returned an invalid handle");
-  }
-
+// The spawn core shared by the inherited and piped shapes: HANDLE_LIST
+// whitelists exactly the three std handles (no stray inheritable handle leaks
+// into the confined child), CREATE_SUSPENDED keeps the job assignment free of
+// an escape window, and the primary thread is resumed only after the child is
+// in the kill-on-close job.
+SpawnedChild spawnWithStdio(HANDLE token, HANDLE job, const std::wstring& commandLine,
+                            const std::wstring& cwd, bool newProcessGroup,
+                            const std::wstring* tempDir,
+                            const std::map<std::wstring, std::wstring>* envOverrides,
+                            HANDLE stdIn, HANDLE stdOut, HANDLE stdErr) {
   HANDLE handles[] = {stdIn, stdOut, stdErr};
   std::vector<uint8_t> attrBuf;
   buildAttributeList(attrBuf, handles, sizeof(handles), PROC_THREAD_ATTRIBUTE_HANDLE_LIST);
@@ -150,6 +164,89 @@ SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstrin
   }
   CloseHandle(pi.hThread);
   return SpawnedChild{pi.hProcess, pi.dwProcessId};
+}
+
+}  // namespace
+
+SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstring& commandLine,
+                                     const std::wstring& cwd, bool newProcessGroup,
+                                     const std::wstring* tempDir,
+                                     const std::map<std::wstring, std::wstring>* envOverrides) {
+  // Pass the caller's std handles straight through via STARTF_USESTDHANDLES.
+  HANDLE stdIn = GetStdHandle(STD_INPUT_HANDLE);
+  HANDLE stdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+  HANDLE stdErr = GetStdHandle(STD_ERROR_HANDLE);
+  if (stdIn == nullptr || stdIn == INVALID_HANDLE_VALUE || stdOut == nullptr
+      || stdOut == INVALID_HANDLE_VALUE || stdErr == nullptr || stdErr == INVALID_HANDLE_VALUE) {
+    throw std::runtime_error("GetStdHandle returned an invalid handle");
+  }
+
+  // Re-enable inheritance on those handles for the duration of the spawn.
+  struct InheritGuard {
+    HANDLE in, out, err;
+    ~InheritGuard() {
+      SetHandleInformation(in, HANDLE_FLAG_INHERIT, 0);
+      SetHandleInformation(out, HANDLE_FLAG_INHERIT, 0);
+      SetHandleInformation(err, HANDLE_FLAG_INHERIT, 0);
+    }
+  };
+  if (!SetHandleInformation(stdIn, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
+      || !SetHandleInformation(stdOut, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
+      || !SetHandleInformation(stdErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+    throw std::runtime_error("SetHandleInformation(inherit) failed (Win32 "
+                             + std::to_string(GetLastError()) + ")");
+  }
+  InheritGuard guard{stdIn, stdOut, stdErr};
+  return spawnWithStdio(token, job, commandLine, cwd, newProcessGroup, tempDir, envOverrides,
+                        stdIn, stdOut, stdErr);
+}
+
+SpawnedChild spawnSandboxedPiped(HANDLE token, HANDLE job, const std::wstring& commandLine,
+                                 const std::wstring& cwd, bool newProcessGroup,
+                                 const std::wstring* tempDir,
+                                 const std::map<std::wstring, std::wstring>* envOverrides) {
+  // Inheritable on creation: the child's end must survive CreateProcessAsUserW.
+  SECURITY_ATTRIBUTES inheritable{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+  HANDLE inRead = nullptr, inWrite = nullptr;
+  HANDLE outRead = nullptr, outWrite = nullptr;
+  HANDLE errRead = nullptr, errWrite = nullptr;
+  auto closeAll = [&] {
+    HANDLE all[] = {inRead, inWrite, outRead, outWrite, errRead, errWrite};
+    for (HANDLE handle : all) {
+      if (handle != nullptr) CloseHandle(handle);
+    }
+  };
+  auto fail = [&](const char* what) {
+    const DWORD err = GetLastError();
+    closeAll();
+    throw std::runtime_error(std::string(what) + " (Win32 " + std::to_string(err) + ")");
+  };
+  if (!CreatePipe(&inRead, &inWrite, &inheritable, 0)) fail("CreatePipe(stdin) failed");
+  if (!CreatePipe(&outRead, &outWrite, &inheritable, 0)) fail("CreatePipe(stdout) failed");
+  if (!CreatePipe(&errRead, &errWrite, &inheritable, 0)) fail("CreatePipe(stderr) failed");
+
+  SpawnedChild child;
+  try {
+    child = spawnWithStdio(token, job, commandLine, cwd, newProcessGroup, tempDir, envOverrides,
+                           inRead, outWrite, errWrite);
+  } catch (...) {
+    closeAll();
+    throw;
+  }
+
+  // The child holds its ends now. Drop the parent's copies of those — a read
+  // never sees EOF while a write end is still open — and clear the inherit
+  // flag CreatePipe left on the surviving ends.
+  CloseHandle(inRead);
+  CloseHandle(outWrite);
+  CloseHandle(errWrite);
+  SetHandleInformation(inWrite, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(errRead, HANDLE_FLAG_INHERIT, 0);
+  child.stdInWrite = inWrite;
+  child.stdOutRead = outRead;
+  child.stdErrRead = errRead;
+  return child;
 }
 
 SpawnedChild spawnSandboxedConPTY(HANDLE token, HANDLE job, HPCON hpcon,

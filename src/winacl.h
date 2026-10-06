@@ -140,18 +140,36 @@ private:
 
 // --- spawn.cpp --------------------------------------------------------------
 
-// Spawn `commandLine` under `token` with the caller's stdio passed straight
-// through: CREATE_SUSPENDED, assigned to `job`, then resumed. The child's
-// environment inherits the runner's (which already carries the rewritten
-// TMP/TEMP). Returns the child process handle (owned) and pid.
+// Spawn `commandLine` under `token`: CREATE_SUSPENDED, assigned to `job`, then
+// resumed. The child's environment is built from the host's with TMP/TEMP
+// pointing at the granted private temp directory when one is supplied.
+// Returns the child process handle (owned) and pid, plus — for the piped shape
+// — the parent's end of each pipe (nullptr otherwise). Those three handles
+// belong to the caller from the moment the spawn returns; the sandbox process
+// object never closes them.
 struct SpawnedChild {
   HANDLE process;
   DWORD pid;
+  HANDLE stdInWrite = nullptr;   // piped shape only
+  HANDLE stdOutRead = nullptr;   // piped shape only
+  HANDLE stdErrRead = nullptr;   // piped shape only
 };
+
+// Spawn with the caller's std handles passed straight through: the child
+// inherits the three handles the launcher itself has.
 SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstring& commandLine,
                                      const std::wstring& cwd, bool newProcessGroup,
                                      const std::wstring* tempDir = nullptr,
                                      const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
+
+// Spawn with three anonymous pipes created here: the child gets the read end
+// of stdin and the write ends of stdout/stderr, while the returned
+// stdInWrite/stdOutRead/stdErrRead are the opposite ends for the caller to
+// write to and read from. Same spawn core as the inherited shape.
+SpawnedChild spawnSandboxedPiped(HANDLE token, HANDLE job, const std::wstring& commandLine,
+                                 const std::wstring& cwd, bool newProcessGroup,
+                                 const std::wstring* tempDir = nullptr,
+                                 const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
 
 // Spawn under an external ConPTY handle (hpcon): the child's stdio is driven
 // by the pseudo console, not by the launcher's handles. bInheritHandles=FALSE
