@@ -39,8 +39,6 @@ constexpr DWORD kLuaFlags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN;
 inline constexpr const wchar_t* kRunnerSignature = L"windows-acl-run";
 constexpr int kRunnerFailureExit = 127;
 
-enum class Mode { ReadOnly, WorkspaceWrite };
-
 // --- sid.cpp ----------------------------------------------------------------
 
 // Deterministic S-1-4-x-y capability SID derived from the canonical workspace
@@ -57,12 +55,11 @@ PSID parseSid(const std::wstring& sddl);
 
 // --- token.cpp --------------------------------------------------------------
 
-// Build the write-restricted token for one mode. `writeSids` carries the
-// capability SIDs for workspace-write (workspace SID + temp SID) and is empty
-// for read-only. `outLogonSid`/`outWorldSid` receive the keep-alive SIDs the
-// caller owns (LocalFree); the read-only default-DACL fallback names
-// Everyone, matching the TS implementation.
-HANDLE createRestrictedToken(Mode mode, const std::vector<PSID>& writeSids,
+// Build the write-restricted token. `writeSids` is the whole write whitelist:
+// the workspace capability SID when the workspace is writable, plus the private
+// temp capability SID (both modes). `outLogonSid`/`outWorldSid` receive the
+// keep-alive SIDs the caller owns (LocalFree).
+HANDLE createRestrictedToken(const std::vector<PSID>& writeSids,
                              PSID& outLogonSid, PSID& outWorldSid);
 
 // Merge a full-access ACE for `sid` into the token's default DACL so new

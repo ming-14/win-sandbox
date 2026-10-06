@@ -40,7 +40,8 @@ inline const char* limitKindString(LimitKind kind) {
 
 /**
  * One confined run: the spawned primary process plus its job, token, private
- * temp directory, and settled exit facts.
+ * temp directory, and settled exit facts. The temp directory is always
+ * self-managed: dispose() revokes its capability grant and removes it.
  *
  * Ownership: SandboxInstance keeps a shared_ptr per process; PyProcess holds
  * another. The object survives shutdown (disposed) so Python wrappers never
@@ -49,7 +50,7 @@ inline const char* limitKindString(LimitKind kind) {
 class SandboxedProcess {
 public:
   SandboxedProcess(SpawnedChild child, std::unique_ptr<Job> job, HANDLE token,
-                   std::wstring tempDir, bool selfManagedTemp, uint64_t wallClockMs);
+                   std::wstring tempDir, uint64_t wallClockMs);
   ~SandboxedProcess();
   SandboxedProcess(const SandboxedProcess&) = delete;
   SandboxedProcess& operator=(const SandboxedProcess&) = delete;
@@ -65,7 +66,7 @@ public:
   void terminate(uint32_t exitCode = 1);
   /** Live process ids in the job. */
   std::vector<DWORD> queryProcessList();
-  /** Release handles, revoke the self-managed temp grant, remove the temp dir.
+  /** Release handles, revoke the temp grant, remove the temp dir.
    *  Idempotent; after this the object answers no live queries. */
   void dispose();
 
@@ -85,15 +86,14 @@ private:
   std::unique_ptr<Job> job_;
   HANDLE token_ = nullptr;
   std::wstring tempDir_;
-  bool selfManagedTemp_ = false;
 };
 
 /**
  * One sandbox: owns the per-workspace standing grants, the live processes,
  * and their private-temp grants. startProcess materializes the capabilities,
  * builds the restricted token, and spawns; shutdown/dispose terminates every
- * live process, revokes the revocable temp grants, and removes the private
- * temp directories (workspace ACEs stand — the reuse cache).
+ * live process, revokes the temp grants, and removes the private temp
+ * directories (workspace ACEs stand — the reuse cache).
  */
 class SandboxInstance {
 public:
@@ -106,7 +106,9 @@ public:
    * Spawn one confined process.
    * @param commandLine - full command line (CreateProcessAsUserW splits it).
    * @param workingDir - workspace root (must exist; becomes the workspace).
-   * @param workspaceWrite - true = workspace-write, false = read-only.
+   * @param workspaceWrite - true = the workspace is writable too; false =
+   *                         read-only workspace. Either way the run gets its
+   *                         own writable private temp directory.
    * @param limits - resource limits (zeros = unlimited).
    * @param hpcon - external pseudo console handle, or nullptr for pipe stdio.
    * @param envOverrides - extra child environment entries (may be null).

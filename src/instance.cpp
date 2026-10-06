@@ -30,10 +30,8 @@ bool hasAnyArgument(const std::wstring& commandLine) {
 // ---------------------------------------------------------------------------
 
 SandboxedProcess::SandboxedProcess(SpawnedChild child, std::unique_ptr<Job> job,
-                                   HANDLE token, std::wstring tempDir,
-                                   bool selfManagedTemp, uint64_t wallClockMs)
-    : child_(child), job_(std::move(job)), token_(token),
-      tempDir_(std::move(tempDir)), selfManagedTemp_(selfManagedTemp) {
+                                   HANDLE token, std::wstring tempDir, uint64_t wallClockMs)
+    : child_(child), job_(std::move(job)), token_(token), tempDir_(std::move(tempDir)) {
   if (wallClockMs > 0) {
     wallClockEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     wallClockThread_ = std::thread([this, wallClockMs] {
@@ -145,7 +143,7 @@ void SandboxedProcess::dispose() {
     CloseHandle(child_.process);
     child_.process = nullptr;
   }
-  if (selfManagedTemp_ && !tempDir_.empty()) {
+  if (!tempDir_.empty()) {
     PSID sid = nullptr;
     try {
       const std::wstring tempSid = tempWriteSid(tempDir_);
@@ -188,8 +186,6 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
                                + std::to_string(GetLastError()) + ")");
     }
   }
-  const Mode mode = workspaceWrite ? Mode::WorkspaceWrite : Mode::ReadOnly;
-
   // startProcess runs with the GIL released, so two Python threads can be in
   // here at once: the standing-grant set and the process list need the lock.
   std::lock_guard<std::mutex> lock(mutex_);
@@ -215,11 +211,13 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     LocalFree(sid);
   }
 
-  // Private temp directory + its revocable capability (workspace-write only).
+  // Private temp directory + its revocable capability. Every run gets one,
+  // read-only included: the ambient temp root is outside the write allowlist,
+  // and a process that cannot write anywhere (DLL init, interpreters) fails
+  // to start at all.
   std::wstring tempDir;
   PSID tempSidPtr = nullptr;
-  bool selfManagedTemp = false;
-  if (workspaceWrite) {
+  {
     wchar_t tmpPath[MAX_PATH + 1] = {};
     if (GetTempPathW(MAX_PATH + 1, tmpPath) == 0) {
       throw std::runtime_error("GetTempPathW failed");
@@ -244,10 +242,10 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
       RemoveDirectoryW(tempDir.c_str());
       throw;
     }
-    selfManagedTemp = true;
   }
 
-  // Restricted token (workspace-write carries both capability SIDs).
+  // Restricted token (the write whitelist: workspace SID when writable, plus
+  // the private temp SID in both modes).
   std::vector<PSID> writeSids;
   PSID wsSidPtr = nullptr;
   PSID logonSid = nullptr;
@@ -258,16 +256,16 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     if (workspaceWrite) {
       wsSidPtr = parseSid(workspaceSid);
       writeSids.push_back(wsSidPtr);
-      if (tempSidPtr != nullptr) writeSids.push_back(tempSidPtr);
     }
-    // ConPTY mode keeps WRITE_RESTRICTED when workspace-write: the previous
-    // degradation (write whitelist silently off) was a security hole. The
-    // DLL-init failures were caused by the ambient temp root being denied;
-    // the explicit per-run TMP/TEMP override (env block below) fixes that
-    // without weakening the mechanism.
-    token = createRestrictedToken(mode, writeSids, logonSid, worldSid);
-    setTokenDefaultDaclGrant(token, tempSidPtr != nullptr ? tempSidPtr
-                                : wsSidPtr != nullptr ? wsSidPtr : worldSid);
+    writeSids.push_back(tempSidPtr);
+    // Both modes keep WRITE_RESTRICTED: the write whitelist is exactly the
+    // capability SIDs above — never a silently disabled mechanism. The temp
+    // SID rides along in read-only too, because the ambient temp root is denied
+    // and a child that cannot write anywhere fails its DLL initialization; the
+    // explicit per-run TMP/TEMP override (env block below) points it at the
+    // granted directory.
+    token = createRestrictedToken(writeSids, logonSid, worldSid);
+    setTokenDefaultDaclGrant(token, tempSidPtr);
     // 加固宿主进程 DACL：拒绝沙箱 restricting SIDs（logon SID + Everyone）对
     // 宿主获得进程写类权限（PROCESS_TERMINATE 等）。fail-closed：失败即抛错，
     // 子进程绝不带洞 spawn。
@@ -307,10 +305,10 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
   try {
     if (hpcon != nullptr) {
       child = spawnSandboxedConPTY(token, job->handle(), hpcon, commandLine, workingDir,
-                                   tempDir.empty() ? nullptr : &tempDir, envOverrides);
+                                   &tempDir, envOverrides);
     } else {
       child = spawnSandboxedInherited(token, job->handle(), commandLine, workingDir, true,
-                                      tempDir.empty() ? nullptr : &tempDir, envOverrides);
+                                      &tempDir, envOverrides);
     }
   } catch (...) {
     if (tempSidPtr != nullptr) {
@@ -325,8 +323,7 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     throw;
   }
 
-  auto process = std::make_shared<SandboxedProcess>(child, std::move(job), token,
-                                                    tempDir, selfManagedTemp,
+  auto process = std::make_shared<SandboxedProcess>(child, std::move(job), token, tempDir,
                                                     limits.wallClockMs);
   if (tempSidPtr != nullptr) LocalFree(tempSidPtr);
   if (wsSidPtr != nullptr) LocalFree(wsSidPtr);

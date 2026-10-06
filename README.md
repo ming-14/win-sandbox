@@ -22,9 +22,13 @@ sb.shutdown()
 
 `start_process` 参数：`command_line`（整条命令行，原样交给
 `CreateProcessAsUserW`）、`working_dir`（工作区根目录，必须存在）、
-`workspace_write`（True = 可写，False = 只读）、`quota`（资源配额，见下）、
-`hpcon`（外部 ConPTY 句柄，默认 None = 继承 stdio）、`env`（追加/覆盖子进程环境
-变量，默认空）。
+`workspace_write`（True = 工作区可写，False = 工作区只读）、`quota`（资源配额，
+见下）、`hpcon`（外部 ConPTY 句柄，默认 None = 继承 stdio）、`env`（追加/覆盖子进程
+环境变量，默认空）。
+
+每次 spawn 都给子进程一个**私有的可写临时目录**（`TMP`/`TEMP` 指向它，进程退出即
+回收），**只读档也有**：宿主临时根目录在写白名单之外，拿不到可写临时目录的进程
+（DLL 初始化、解释器）根本起不来。两档的差别只有工作区本身。
 
 `Process` 接口：`pid`、`wait()` → `(exit_code, reason)`、`poll_exit()`（未结束返回
 None）、`terminate(exit_code=1)`、`query_process_list()`。
@@ -66,7 +70,7 @@ wheel 由 scikit-build-core 按构建机架构产出，支持 x64 / arm64。
 ```
 src/
 ├── CMakeLists.txt    # nanobind 构建（唯一目标 win_sandbox_native.pyd）
-├── winacl.h          # 共享定义：Mode / ResourceLimits / LimitKind / Job / SpawnedChild
+├── winacl.h          # 共享定义：ResourceLimits / LimitKind / Job / SpawnedChild
 ├── token.cpp         # CreateRestrictedToken：DISABLE_MAX_PRIVILEGE|LUA_TOKEN|WRITE_RESTRICTED
 ├── acl.cpp           # grantWrite / revokeWrite（capability SID ACE）+ 宿主进程 DACL 加固
 ├── sid.cpp           # 能力 SID 派生（S-1-4-x-y，sha256 确定性）+ SHA-256 + UTF 转换

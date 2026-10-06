@@ -1,12 +1,12 @@
 // token.cpp — WRITE_RESTRICTED token construction.
 //
 // Duplicates the caller's token into a write-restricted token whose
-// restricting-SID list follows the mode:
-//   read-only:       [logon SID, Everyone]
-//   workspace-write: [logon SID, Everyone, workspace SID, temp SID]
-// The logon SID + Everyone keep-alive group is shared by both modes: early
-// DLL init dies with 0xC0000142 and CNG crashes pwsh without them. Every call
-// is checked; any failure throws — the child is never spawned unrestricted.
+// restricting-SID list is [logon SID, Everyone] plus the caller's capability
+// SIDs (the workspace SID when the workspace is writable, and always the
+// private temp SID). The logon SID + Everyone keep-alive group is shared by
+// both modes: early DLL init dies with 0xC0000142 and CNG crashes pwsh without
+// them. Every call is checked; any failure throws — the child is never spawned
+// unrestricted.
 #include "winacl.h"
 
 #include <aclapi.h>
@@ -68,7 +68,7 @@ PSID makeWellKnownSid(WELL_KNOWN_SID_TYPE type) {
 
 }  // namespace
 
-HANDLE createRestrictedToken(Mode mode, const std::vector<PSID>& writeSids, PSID& outLogonSid, PSID& outWorldSid) {
+HANDLE createRestrictedToken(const std::vector<PSID>& writeSids, PSID& outLogonSid, PSID& outWorldSid) {
   HANDLE current = openCurrentProcessToken();
   PSID logonSid = nullptr;
   PSID worldSid = nullptr;
@@ -80,12 +80,12 @@ HANDLE createRestrictedToken(Mode mode, const std::vector<PSID>& writeSids, PSID
     std::vector<PSID> restricting;
     restricting.push_back(logonSid);
     restricting.push_back(worldSid);
-    if (mode == Mode::WorkspaceWrite) {
-      if (writeSids.empty()) {
-        throw std::runtime_error("workspace-write restricting list requires at least one write SID");
-      }
-      restricting.insert(restricting.end(), writeSids.begin(), writeSids.end());
+    // Fail closed: a restricting list without any capability SID would deny
+    // every write, so an empty whitelist is a caller bug, not a mode.
+    if (writeSids.empty()) {
+      throw std::runtime_error("the restricting list requires at least one write SID");
     }
+    restricting.insert(restricting.end(), writeSids.begin(), writeSids.end());
 
     std::vector<SID_AND_ATTRIBUTES> list;
     list.reserve(restricting.size());
