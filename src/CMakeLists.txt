@@ -9,7 +9,7 @@
 #
 # Requires nanobind (pip install nanobind) and a Visual Studio toolchain.
 # Builds one self-contained stable-ABI (abi3) extension that works across
-# Python 3.10+ without recompilation and without a runtime backend package.
+# Python 3.12+ without recompilation and without a runtime backend package.
 cmake_minimum_required(VERSION 3.20)
 project(win_sandbox_native LANGUAGES CXX)
 
@@ -34,7 +34,9 @@ set(CORE_SOURCES
 
 # abi3: STABLE_ABI + NB_STATIC link the nanobind backend into the module, so
 # the wheel is self-contained (no runtime 'nanobind-backend' dependency) and
-# compatible with Python 3.10+ (floor set by wheel.py-api = "cp310").
+# compatible with Python 3.12+ (floor set by wheel.py-api = "cp312").
+# Keep the linked mode: it is the only mode that stays self-contained, and it
+# cannot target below 3.12 (nanobind 3.x compiles its backend for 3.12 API).
 nanobind_add_module(win_sandbox_native
   STABLE_ABI
   NB_STATIC

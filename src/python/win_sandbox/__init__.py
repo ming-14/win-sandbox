@@ -1,6 +1,6 @@
 """win_sandbox - Windows 进程沙箱隔离（nanobind in-process 扩展）。
 
-本包直接加载 win_sandbox_native.pyd 扩展（Stable ABI / abi3，Python 3.10+），
+本包直接加载 win_sandbox_native.pyd 扩展（Stable ABI / abi3，Python 3.12+），
 以 nanobind in-process 形态交互，无命名管道通信。
 
 用法：

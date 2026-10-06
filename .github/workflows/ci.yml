@@ -44,7 +44,8 @@ jobs:
       - name: Setup Python (${{ matrix.py-arch }})
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # abi3 下限 cp312：构建机不能低于 3.12，否则产出 cp311 版本专属 wheel
+          python-version: "3.12"
           architecture: ${{ matrix.py-arch }}
 
       - name: Install build dependencies

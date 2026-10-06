@@ -1,7 +1,7 @@
 # win-sandbox
 
 Windows 进程沙箱：`WRITE_RESTRICTED` 受限令牌 + capability-SID 写白名单 + Job 资源配额，
-以 nanobind in-process 扩展（`win_sandbox_native.pyd`，abi3 / Python 3.10+）加载。
+以 nanobind in-process 扩展（`win_sandbox_native.pyd`，abi3 / Python 3.12+）加载。
 
 ## 用法
 
@@ -88,7 +88,7 @@ python examples/tk_console.py
 
 | 方式 | 命令 | 产物 |
 |------|------|------|
-| wheel | `pip wheel . -w dist`（scikit-build-core） | `dist/win_sandbox-*.whl`（abi3，Python 3.10+） |
+| wheel | `pip wheel . -w dist`（scikit-build-core，构建机需 Python 3.12+） | `dist/win_sandbox-*.whl`（abi3，Python 3.12+） |
 | 独立组装 | `python build.py` | `dist/win_sandbox/`（`_native/*.pyd` + Python 包装） |
 | 隔离自测 | `python build.py --selftest` | `src/build/selftest.exe`（不经绑定层） |
 
