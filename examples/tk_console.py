@@ -1,8 +1,10 @@
 """win_sandbox 的 Tk 控制台。
 
 设计取向：**面板的主要用途是看日志、偶尔调一个参数**，所以不给 15 个参数
-各摆一个常驻输入框。界面只列"与默认值不同"的覆盖项，加/改参数走弹窗，
-省下的面积全给日志。
+各摆一个常驻输入框。参数规格表里的项全量铺在一张表里（未覆盖显示"—"），
+改值全在表里原地完成：双击即改——text/int 在"值"列上就地输入（回车提交、
+Esc 取消、失焦提交、非法值标红不落盘），布尔项翻转否/是，路径弹系统文件夹
+选择器；「置空」把覆盖项删掉回默认值，省下的面积给日志。
 
 面板只当遥控器——真正交互的 cmd 跑在新窗口里，面板不接管标准句柄。
 
@@ -25,7 +27,6 @@ from __future__ import annotations
 
 import sys
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -37,27 +38,26 @@ if (_ROOT / "dist" / "win_sandbox").is_dir():
 import win_sandbox  # noqa: E402
 
 DEFAULT_COMMAND = "cmd.exe /c start /wait cmd.exe /K"
-DEFAULT_WORKSPACE = str(Path.home())
+DEFAULT_WORKSPACE = str(Path.cwd())  # 启动时的工作目录（与 dsh 的 workspaceRoot: process.cwd() 一致）
 
 
 # ── 参数规格表 ──────────────────────────────────────────────────────────
-# 界面完全由这张表驱动：加参数不用改任何界面代码。key 以 "quota." 开头的
-# 归入 start_process 的 quota dict，其余是直接入参。
-# kind: text | int | bool；optional=False 的常驻显示且不可移除。
+# 界面完全由这张表驱动：表里有几行界面就摆几行，加参数不用改任何界面代码。
+# key 以 "quota." 开头的归入 start_process 的 quota dict，其余是直接入参。
+# kind: text | dir | int | bool；值列显示"—"表示未覆盖（走默认），
+# bool 只有否/是（默认否，双击翻转），dir 用文件夹选择器。
 @dataclass(frozen=True)
 class Param:
     key: str
     label: str
     kind: str
-    optional: bool = True
     minimum: int | None = None
     maximum: int | None = None
-    default: object = None
     hint: str = ""
 
 
 PARAMS: tuple[Param, ...] = (
-    Param("working_dir", "工作区（可写根）", "text", optional=False),
+    Param("working_dir", "工作区（可写根）", "dir"),
     Param("hpcon", "外部伪控制台 HPCON", "text", hint="十进制；留空 = 不用伪控制台"),
     Param("quota.memory_mb", "单进程内存", "int", minimum=0, hint="MB"),
     Param("quota.job_memory_mb", "Job 总内存", "int", minimum=0, hint="MB"),
@@ -66,11 +66,11 @@ PARAMS: tuple[Param, ...] = (
           hint="百分比 1-100"),
     Param("quota.max_processes", "最大进程数", "int", minimum=1),
     Param("quota.wall_clock_timeout_ms", "墙钟超时", "int", minimum=1, hint="毫秒"),
-    Param("quota.no_ui", "禁用 UI 能力", "bool", default=False,
+    Param("quota.no_ui", "禁用 UI 能力", "bool",
           hint="剪贴板 / 系统参数 / 显示设置"),
-    Param("quota.crash_silent", "崩溃静默", "bool", default=False,
+    Param("quota.crash_silent", "崩溃静默", "bool",
           hint="DIE_ON_UNHANDLED_EXCEPTION"),
-    Param("quota.breakaway_ok", "允许脱离 Job", "bool", default=False),
+    Param("quota.breakaway_ok", "允许脱离 Job", "bool"),
 )
 
 PARAM_BY_KEY = {p.key: p for p in PARAMS}
@@ -227,77 +227,6 @@ class Session:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class ParamDialog:
-    """单个参数的编辑弹窗：输入即校验，非法值存不进来。"""
-
-    def __init__(self, parent, param: Param, current=None) -> None:
-        import tkinter as tk
-        from tkinter import ttk
-
-        self.param = param
-        self.result = None
-
-        self.top = tk.Toplevel(parent)
-        self.top.title(f"{param.label}   [{param.key}]")
-        self.top.resizable(False, False)
-        self.top.transient(parent)
-        self.top.grab_set()
-
-        body = ttk.Frame(self.top, padding=12)
-        body.pack(fill="both", expand=True)
-        body.columnconfigure(0, weight=1)
-
-        if param.hint:
-            ttk.Label(body, text=param.hint, foreground="#666").grid(row=0, column=0, sticky="w")
-
-        if param.kind == "bool":
-            self._var = tk.BooleanVar(value=bool(current))
-            ttk.Checkbutton(body, text="启用", variable=self._var).grid(
-                row=1, column=0, sticky="w", pady=(8, 0)
-            )
-        else:
-            self._var = tk.StringVar(value="" if current is None else str(current))
-            entry = ttk.Entry(body, textvariable=self._var, width=44)
-            entry.grid(row=1, column=0, sticky="we", pady=(8, 0))
-            entry.focus_set()
-            entry.select_range(0, "end")
-            self._var.trace_add("write", lambda *_: self._validate())
-
-        self._hint = ttk.Label(body, text="", foreground="#c0392b")
-        self._hint.grid(row=2, column=0, sticky="w", pady=(6, 0))
-
-        buttons = ttk.Frame(body)
-        buttons.grid(row=3, column=0, sticky="e", pady=(12, 0))
-        self._ok = ttk.Button(buttons, text="确定", command=self._accept)
-        ttk.Button(buttons, text="取消", command=self.top.destroy).pack(side="right", padx=(6, 0))
-        self._ok.pack(side="right")
-
-        self.top.bind("<Return>", lambda _e: self._accept())
-        self.top.bind("<Escape>", lambda _e: self.top.destroy())
-        self._validate()
-
-    def _validate(self) -> bool:
-        error = None
-        if self.param.kind != "bool":
-            try:
-                coerce(self.param, self._var.get())
-            except ValueError as exc:
-                error = str(exc)
-        self._hint.configure(text=error or "")
-        self._ok.configure(state="disabled" if error else "normal")
-        return error is None
-
-    def _accept(self) -> None:
-        if not self._validate():
-            return
-        self.result = coerce(self.param, self._var.get())
-        self.top.destroy()
-
-    def show(self):
-        self.top.wait_window()
-        return self.result
-
-
 class EnvDialog:
     """环境变量覆盖：每行 KEY=VALUE，实时校验。"""
 
@@ -368,49 +297,6 @@ class EnvDialog:
         return self.result
 
 
-class ChooseDialog:
-    """从未设置的参数里挑一个。"""
-
-    def __init__(self, parent, params) -> None:
-        import tkinter as tk
-        from tkinter import ttk
-
-        self.params = list(params)
-        self.result = None
-        self.top = tk.Toplevel(parent)
-        self.top.title("添加参数")
-        self.top.transient(parent)
-        self.top.grab_set()
-
-        body = ttk.Frame(self.top, padding=12)
-        body.pack(fill="both", expand=True)
-        ttk.Label(body, text="选择要覆盖的参数").pack(anchor="w")
-        self.listbox = tk.Listbox(body, height=min(12, len(self.params)), width=48)
-        self.listbox.pack(fill="both", expand=True, pady=(6, 0))
-        for param in self.params:
-            suffix = f"  （{param.hint}）" if param.hint else ""
-            self.listbox.insert("end", f"{param.label}{suffix}")
-        self.listbox.selection_set(0)
-
-        buttons = ttk.Frame(body)
-        buttons.pack(anchor="e", pady=(10, 0))
-        ttk.Button(buttons, text="确定", command=self._accept).pack(side="right")
-        ttk.Button(buttons, text="取消", command=self.top.destroy).pack(side="right", padx=(0, 6))
-        self.listbox.bind("<Double-1>", lambda _e: self._accept())
-        self.top.bind("<Return>", lambda _e: self._accept())
-        self.top.bind("<Escape>", lambda _e: self.top.destroy())
-
-    def _accept(self) -> None:
-        selection = self.listbox.curselection()
-        if selection:
-            self.result = self.params[selection[0]].key
-        self.top.destroy()
-
-    def show(self):
-        self.top.wait_window()
-        return self.result
-
-
 class Console:
     def __init__(self, root) -> None:
         import tkinter as tk
@@ -425,7 +311,6 @@ class Console:
         self._session = Session(self._queue_log)
         self._log_queue: list[str] = []
         self._closed = False
-        self._show_all = False
         self._last_workspace = self._overrides.workspace()
 
         if "vista" in ttk.Style().theme_names():
@@ -478,16 +363,14 @@ class Console:
         panes = ttk.PanedWindow(self.root, orient="horizontal")
         panes.pack(fill="both", expand=True, padx=10, pady=(0, 6))
 
-        # 左：覆盖项表。默认状态下只有工作区一行，不占面积。
+        # 左：配置表——规格表全量铺开，值列"—"表示未覆盖（走默认）。
         left = ttk.Frame(panes, width=400)
         panes.add(left, weight=0)
 
         head = ttk.Frame(left)
         head.pack(fill="x")
         ttk.Label(head, text="配置覆盖").pack(side="left")
-        self.btn_show_all = ttk.Button(head, text="显示全部", width=9,
-                                       command=self._toggle_show_all)
-        self.btn_show_all.pack(side="right")
+        ttk.Label(head, text="双击行编辑", foreground="#888").pack(side="left", padx=(8, 0))
 
         self.tree = ttk.Treeview(left, columns=("value",), show="tree headings", height=14)
         self.tree.heading("#0", text="参数")
@@ -495,16 +378,23 @@ class Console:
         self.tree.column("#0", width=180, stretch=False)
         self.tree.column("value", width=200)
         self.tree.pack(fill="both", expand=True, pady=(4, 4))
-        self.tree.bind("<Double-1>", lambda _e: self._on_edit())
-        self.tree.bind("<Delete>", lambda _e: self._on_remove())
+        self.tree.bind("<Double-1>", self._on_double)
+        self.tree.bind("<Delete>", lambda _e: self._on_clear())
+
+        # 原地编辑浮层：叠在"值"单元格上的 Entry（text/int 用）
+        self._editor = None
+        self._edit_key: str | None = None
 
         row = ttk.Frame(left)
         row.pack(fill="x")
-        self.btn_add = ttk.Button(row, text="添加…", command=self._on_add, width=9)
-        self.btn_edit = ttk.Button(row, text="修改…", command=self._on_edit, width=9)
-        self.btn_remove = ttk.Button(row, text="移除", command=self._on_remove, width=9)
-        for btn in (self.btn_add, self.btn_edit, self.btn_remove):
-            btn.pack(side="left", padx=(0, 5))
+        self.btn_reset = ttk.Button(row, text="置空", command=self._on_clear, width=9)
+        self.btn_reset.pack(side="left", padx=(0, 5))
+
+        self.lbl_error = ttk.Label(left, text="", foreground="#c0392b", wraplength=370)
+        self.lbl_error.pack(anchor="w", pady=(4, 0))
+
+        # 原地编辑的非法值：让浮层 Entry 换成红字样式
+        ttk.Style(self.root).configure("Err.TEntry", foreground="#c0392b")
 
         self.lbl_env = ttk.Label(left, text="环境变量：无", foreground="#555", wraplength=370)
         self.lbl_env.pack(anchor="w", pady=(6, 0))
@@ -529,19 +419,13 @@ class Console:
 
     # ── 覆盖项表 ────────────────────────────────────────────
 
-    def _visible_keys(self) -> list[str]:
-        if self._show_all:
-            return [p.key for p in PARAMS]
-        keys = [p.key for p in PARAMS if not p.optional]
-        keys += [k for k in self._overrides.values if k not in keys]
-        return keys
-
     def _shown_value(self, key: str) -> str:
         param = PARAM_BY_KEY[key]
+        if param.kind == "bool":
+            # 布尔项只有否/是：未覆盖按默认（否）显示
+            return "是" if bool(self._overrides.values.get(key, False)) else "否"
         if key in self._overrides.values:
             value = self._overrides.values[key]
-            if param.kind == "bool":
-                return "启用" if value else "禁用"
             suffix = f"  {param.hint}" if param.kind == "int" and param.hint else ""
             return f"{value}{suffix}"
         if key == "working_dir":
@@ -549,10 +433,14 @@ class Console:
         return "—"
 
     def _refresh_rows(self) -> None:
+        keep = set(self.tree.selection())  # 重画会清掉选中，原样接回去
         self.tree.delete(*self.tree.get_children())
-        for key in self._visible_keys():
-            self.tree.insert("", "end", iid=key, text=PARAM_BY_KEY[key].label,
-                             values=(self._shown_value(key),))
+        for param in PARAMS:
+            self.tree.insert("", "end", iid=param.key, text=param.label,
+                             values=(self._shown_value(param.key),))
+        alive = [k for k in keep if self.tree.exists(k)]
+        if alive:
+            self.tree.selection_set(alive)
         env_text = "、".join(f"{k}={v}" for k, v in self._overrides.env.items()) or "无"
         self.lbl_env.configure(text=f"环境变量：{env_text}")
 
@@ -560,43 +448,154 @@ class Console:
         selection = self.tree.selection()
         return selection[0] if selection else None
 
-    def _toggle_show_all(self) -> None:
-        self._show_all = not self._show_all
-        self.btn_show_all.configure(text="只看改动" if self._show_all else "显示全部")
-        self._refresh_rows()
+    def _current(self, param: Param):
+        """该参数的现值：未覆盖时给默认值（工作区给启动 cwd）。"""
+        value = self._overrides.values.get(param.key)
+        if value is None and param.key == "working_dir":
+            value = self._overrides.workspace()
+        return value
 
-    def _on_add(self) -> None:
-        if not self._show_all:
-            self._toggle_show_all()
-        available = [p for p in PARAMS if p.optional and p.key not in self._overrides.values]
-        if not available:
-            self._log("所有参数都已设置")
+    def _locked(self) -> bool:
+        """运行中不让改配置（和原来「运行中禁用编辑按钮」同一条规矩）。"""
+        if self._session.running:
+            self._log("会话运行中：先「关闭实例」再改配置", err=True)
+            return True
+        return False
+
+    def _on_double(self, event) -> None:
+        """双击一行：bool 原地翻转 / dir 弹文件夹选择器 / 其余原地编辑值列。"""
+        param = PARAM_BY_KEY.get(self.tree.identify_row(event.y))
+        if param is None or self._locked():
             return
-        key = ChooseDialog(self.root, available).show()
+        if self._editor is not None:  # 换行：先收掉上一处编辑（合法才落盘）
+            self._commit_editor(keep_on_error=False)
+        self.tree.selection_set(param.key)
+        if param.kind == "bool":
+            self._set_value(param.key,
+                            not bool(self._overrides.values.get(param.key, False)))
+        elif param.kind == "dir":
+            picked = self._pick_dir(param, self._current(param))
+            if picked is not None:
+                self._set_value(param.key, picked)
+        else:
+            self._begin_edit(param.key)
+
+    # ── 原地编辑（text / int） ─────────────────────────────
+
+    def _begin_edit(self, key: str) -> None:
+        """把浮层 Entry 叠在"值"单元格上，就地输入。"""
+        from tkinter import ttk
+
+        if self._editor is not None:  # 已在编辑别的行：先把上一处收掉
+            self._commit_editor(keep_on_error=True)
+        box = self.tree.bbox(key, column="value")
+        if box is None:  # 行不可见（滚出视野 / 布局还没完成）
+            return
+        raw = self._overrides.values.get(key)
+        self._edit_key = key
+        editor = ttk.Entry(self.tree, takefocus=True)
+        editor.place(x=box[0], y=box[1] - 1, width=box[2], height=box[3] + 2)
+        editor.insert(0, "" if raw is None else str(raw))
+        editor.select_range(0, "end")
+        editor.bind("<Return>", lambda _e: self._commit_editor(keep_on_error=True))
+        editor.bind("<FocusOut>", lambda _e: self._commit_editor(keep_on_error=False))
+        editor.bind("<Escape>", lambda _e: self._cancel_editor())
+        editor.bind("<KeyRelease>", lambda _e: self._validate_editor())
+        self._editor = editor
+        editor.focus_set()
+        self._validate_editor()
+
+    def _check(self, key: str | None, raw: str):
+        """coerce 校验；返回 (值, 错误文案)，合法时错误为 None。"""
         if key is None:
+            return None, "没有正在编辑的参数"
+        try:
+            return coerce(PARAM_BY_KEY[key], raw), None
+        except ValueError as exc:
+            return None, str(exc)
+
+    @staticmethod
+    def _is_clear(key: str, raw: str) -> bool:
+        """输入框清空 = 想置空（bool 没有空值一说）。"""
+        return PARAM_BY_KEY[key].kind != "bool" and not raw.strip()
+
+    def _validate_editor(self) -> None:
+        """输入即校验：非法值换红字样式，原文案挂在表格下方。"""
+        editor = self._editor
+        if editor is None:
+            return
+        key, raw = self._edit_key, editor.get()
+        if key is not None and self._is_clear(key, raw):
+            editor.configure(style="TEntry")
+            self.lbl_error.configure(text="")
+            return
+        _value, error = self._check(key, raw)
+        editor.configure(style="Err.TEntry" if error else "TEntry")
+        self.lbl_error.configure(text=error or "")
+
+    def _commit_editor(self, keep_on_error: bool = False) -> None:
+        """回车（keep_on_error=True）：非法就留在编辑态；失焦：非法当取消。"""
+        editor = self._editor
+        if editor is None:
+            return
+        key, raw = self._edit_key, editor.get()
+        if key is not None and self._is_clear(key, raw):  # 空输入 = 置空
+            self._close_editor()
+            self._on_clear_key(key)
+            return
+        value, error = self._check(key, raw)
+        if error and keep_on_error:
+            self._validate_editor()
+            return
+        self._close_editor()
+        if error:
+            label = PARAM_BY_KEY[key].label if key is not None else "配置"
+            self._log(f"{label}：{error}（未保存）", err=True)
+            return
+        self._set_value(key, value)
+
+    def _cancel_editor(self) -> None:
+        self._close_editor()
+
+    def _close_editor(self) -> None:
+        editor = self._editor
+        self._editor = None
+        self._edit_key = None
+        self.lbl_error.configure(text="")
+        if editor is not None:
+            editor.destroy()
+
+    def _pick_dir(self, param: Param, current) -> str | None:
+        """系统文件夹选择器；取消返回 None，选中返回规范化路径。"""
+        from tkinter import filedialog
+
+        start = str(current) if current else self._overrides.workspace()
+        if not Path(start).is_dir():  # 落到最近一级还存在的祖先目录
+            probe = Path(start)
+            while not probe.is_dir() and probe.parent != probe:
+                probe = probe.parent
+            start = str(probe) if probe.is_dir() else str(Path.cwd())
+        picked = filedialog.askdirectory(title=f"{param.label}   [{param.key}]",
+                                         initialdir=start, mustexist=True,
+                                         parent=self.root)
+        return str(Path(picked)) if picked else None
+
+    def _on_clear(self) -> None:
+        self._on_clear_key(self._selected_key())
+
+    def _on_clear_key(self, key: str | None) -> None:
+        """置空：删掉这项覆盖，回到规格/默认值。"""
+        if key is None or self._locked():
             return
         param = PARAM_BY_KEY[key]
-        value = ParamDialog(self.root, param, self._overrides.values.get(key, param.default)).show()
-        if value is not None:
-            self._set_value(key, value)
-
-    def _on_edit(self) -> None:
-        key = self._selected_key()
-        if key is None:
+        if key not in self._overrides.values:
+            self._log(f"{param.label}：未覆盖，无需置空")
             return
-        param = PARAM_BY_KEY[key]
-        current = self._overrides.values.get(key)
-        if current is None and key == "working_dir":
-            current = self._overrides.workspace()
-        value = ParamDialog(self.root, param, current).show()
-        if value is not None:
-            self._set_value(key, value)
-
-    def _on_remove(self) -> None:
-        key = self._selected_key()
-        if key is None or not PARAM_BY_KEY[key].optional:
-            return
-        self._overrides.values.pop(key, None)
+        del self._overrides.values[key]
+        if key == "working_dir":  # 默认工作区变了，和 _set_value 一样点一句
+            self._log(f"工作区：{self._last_workspace} → {self._overrides.workspace()}")
+            self._last_workspace = self._overrides.workspace()
+        self._log(f"{param.label}：已置空", ok=True)
         self._refresh_rows()
 
     def _set_value(self, key: str, value) -> None:
@@ -663,8 +662,7 @@ class Console:
         self.btn_stop.configure(state="normal" if running else "disabled")
         self.btn_close.configure(state="normal" if pid is not None else "disabled")
         editing = "disabled" if running else "normal"
-        for btn in (self.btn_add, self.btn_edit, self.btn_remove):
-            btn.configure(state=editing)
+        self.btn_reset.configure(state=editing)
 
     def _tick(self) -> None:
         if self._closed:
