@@ -16,6 +16,7 @@ import msvcrt
 import os
 import sys
 import tempfile
+import threading
 
 import win_sandbox
 
@@ -76,6 +77,8 @@ def main() -> int:
     # 「顺手」给只读档补个可写目录
     def drain(handle: int) -> str:
         """把一条管道读到 EOF，返回文本（句柄归调用方，读完即关）"""
+        if not handle:
+            return ""
         fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
         chunks: list[bytes] = []
         while True:
@@ -86,27 +89,35 @@ def main() -> int:
         os.close(fd)
         return b"".join(chunks).decode("utf-8", "replace").strip()
 
-    def run_piped(command_line: str, workspace_write: bool, cwd: str) -> tuple[str, int]:
-        """跑一条命令并读回它的 stdout，返回 (文本, 退出码)"""
+    def run_piped(command_line: str, workspace_write: bool, cwd: str) -> tuple[str, int, str]:
+        """跑一条命令，返回 (stdout, 退出码, stderr)
+
+        两条管道串行读会在子进程写满缓冲时互相卡住，所以 stderr 交给另一个线程
+        """
         proc = sb.start_process(
             command_line=command_line,
             working_dir=cwd,
             workspace_write=workspace_write,
             pipe_stdio=True,
         )
+        box: list[str] = []
+        watcher = threading.Thread(target=lambda: box.append(drain(proc.stderr_handle)))
+        watcher.start()
         text = drain(proc.stdout_handle)
+        watcher.join()
         code, _ = proc.wait()
-        return text, code
+        return text, code, box[0] if box else ""
 
     # 第 2 步的 workdir 已经删了，这里另开一个：只用它当 cwd，不靠它可写
     workdir2 = tempfile.mkdtemp(prefix="ws_smoke_boundary_")
     try:
         echo_temp = 'cmd /c "echo %TEMP%"'
-        writable_temp, code_w = run_piped(echo_temp, True, workdir2)
-        read_only_temp, code_r = run_piped(echo_temp, False, workdir2)
+        writable_temp, code_w, err_w = run_piped(echo_temp, True, workdir2)
+        read_only_temp, code_r, err_r = run_piped(echo_temp, False, workdir2)
         print(f"[smoke] writable TMP  = {writable_temp} (exit {code_w})")
         print(f"[smoke] read-only TMP = {read_only_temp} (exit {code_r})")
-        assert code_w == 0 and code_r == 0, f"echo %TEMP% failed: {code_w} / {code_r}"
+        assert code_w == 0 and code_r == 0, (
+            f"echo %TEMP% failed: {code_w} / {code_r} (stderr {err_w!r} / {err_r!r})")
         assert os.path.basename(writable_temp).startswith("winsandbox-"), \
             f"writable run should get a private temp: {writable_temp}"
         assert not os.path.basename(read_only_temp).startswith("winsandbox-"), \
@@ -114,7 +125,7 @@ def main() -> int:
 
         # 只读档连宿主临时根都写不进去（写白名单为空）
         probe = os.path.join(read_only_temp.rstrip("\\"), "ws_smoke_ro.txt")
-        verdict, _ = run_piped(
+        verdict, _, _ = run_piped(
             'cmd /c "echo x > %TEMP%\\ws_smoke_ro.txt && echo WROTE || echo DENIED"',
             False, workdir2)
         print(f"[smoke] read-only write to TEMP -> {verdict}")
@@ -126,11 +137,26 @@ def main() -> int:
         obj_probe = os.path.join(workdir2, "ws_smoke_obj.py")
         with open(obj_probe, "w", encoding="utf-8") as f:
             f.write("import os\nos.pipe()\nprint(\"PIPE_OK\")\n")
-        obj_out, obj_code = run_piped(
+        obj_out, obj_code, obj_err = run_piped(
             f'"{sys.executable}" "{obj_probe}"', False, workdir2)
         print(f"[smoke] read-only os.pipe -> {obj_out} (exit {obj_code})")
-        assert obj_code == 0 and "PIPE_OK" in obj_out, \
-            f"read-only run must still create its own objects: {obj_out!r} (exit {obj_code})"
+        if obj_code != 0:
+            print(f"[diag] stderr={obj_err!r}")
+            print(f"[diag] cwd={workdir2} exe={sys.executable} probe={obj_probe}")
+            diag = [
+                ("py -V", f'"{sys.executable}" -V'),
+                ("py -c", f'"{sys.executable}" -c "print(1)"'),
+                ("py -B script", f'"{sys.executable}" -B "{obj_probe}"'),
+                ("py -I -S script", f'"{sys.executable}" -I -S "{obj_probe}"'),
+                ("type script", f'cmd /c "type {obj_probe}"'),
+                ("env", 'cmd /c "echo TMP=%TMP% TEMP=%TEMP% USERPROFILE=%USERPROFILE%"'),
+            ]
+            for label, cmd in diag:
+                o, c, e = run_piped(cmd, False, workdir2)
+                print(f"[diag] {label}: exit={c} out={o!r} err={e!r}")
+        assert obj_code == 0 and "PIPE_OK" in obj_out, (
+            f"read-only run must still create its own objects: {obj_out!r} "
+            f"(exit {obj_code}, stderr {obj_err!r})")
     finally:
         try:
             os.rmdir(workdir2)
