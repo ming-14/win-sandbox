@@ -15,6 +15,6 @@ if _os.path.isdir(_native_dir):
 
 from win_sandbox_native import SandboxInstance, Process  # noqa: E402
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = ["SandboxInstance", "Process", "__version__"]
