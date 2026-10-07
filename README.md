@@ -30,7 +30,8 @@ None 时：True = 给子进程三条匿名管道，False = 让它继承本进程
 
 每次 spawn 都给子进程一个**私有的可写临时目录**（`TMP`/`TEMP` 指向它，进程退出即
 回收），**只读档也有**：宿主临时根目录在写白名单之外，拿不到可写临时目录的进程
-（DLL 初始化、解释器）根本起不来。两档的差别只有工作区本身。
+（DLL 初始化、解释器）根本起不来。两档的差别只有工作区本身。目录名固定为
+`<宿主临时根>\winsandbox-<hex>`。
 
 `Process` 接口：`pid`、`wait()` → `(exit_code, reason)`、`poll_exit()`（未结束返回
 None）、`terminate(exit_code=1)`、`query_process_list()`，以及管道形态下的
@@ -123,6 +124,13 @@ workspace/temp 授权（`acl.cpp`）→ 构建受限令牌（`token.cpp`，SID �
 
 宿主进程 DACL 加固（`acl.cpp` `hardenHostProcessDacl`）在每次 spawn 前执行：拒绝沙箱
 restricting SIDs 对宿主的进程写权限（含 `PROCESS_TERMINATE`）。
+
+## 由来
+
+沙箱模型参照 `@deepseek-ai/dsh-sandbox-windows-acl` 的实现（受限令牌 + capability-SID
+写白名单 + Job 资源配额 + 私有 temp 的 `TMP`/`TEMP` 重定向）。这里是一套独立的原生
+C++ 重写（nanobind 绑定），不复用其源码，也不与其共享锁约定；能力 SID 的派生规则保持
+冻结，以便复用磁盘上既有的 ACE。
 
 ## License
 

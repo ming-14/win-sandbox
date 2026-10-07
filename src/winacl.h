@@ -1,11 +1,11 @@
-// winacl.h — shared definitions for the windows-acl-run confinement launcher.
+// winacl.h — shared definitions for the in-process Windows confinement core.
 //
-// A C++ reimplementation of the @deepseek-ai/dsh-sandbox-windows-acl runner:
-// wraps a caller's argv so it executes under a WRITE_RESTRICTED token whose
-// restricting SIDs carry per-workspace and per-session-temp write capabilities,
-// inside a kill-on-close job, with the caller's stdio passed straight through.
-// Fail-closed: any Win32 failure prints `windows-acl-run: <detail>` to stderr
-// and exits 127 without ever spawning the child unrestricted.
+// Confines a child process under a WRITE_RESTRICTED token whose restricting
+// SIDs carry per-workspace and per-session-temp write capabilities, inside a
+// kill-on-close job, with the caller's stdio passed straight through
+// (inherited handles, self-built pipes, or an external ConPTY).
+// Fail-closed: every Win32 failure aborts before the child is spawned and
+// surfaces as a std::runtime_error carrying the Win32 error code.
 #pragma once
 
 #define WIN32_LEAN_AND_MEAN
@@ -34,20 +34,15 @@ constexpr DWORD kGrantMask = (FILE_GENERIC_WRITE | DELETE | FILE_DELETE_CHILD) &
 constexpr DWORD kRestrictFlags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
 constexpr DWORD kLuaFlags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN;
 
-// Runner-failure contract: every runner-side failure prints this signature
-// line and exits 127 so the harness's RUNNER_FAILURE_RULES match it.
-inline constexpr const wchar_t* kRunnerSignature = L"windows-acl-run";
-constexpr int kRunnerFailureExit = 127;
-
 // --- sid.cpp ----------------------------------------------------------------
 
 // Deterministic S-1-4-x-y capability SID derived from the canonical workspace
-// path (byte-compatible with the TS workspaceWriteSid, so standing ACEs from
-// earlier TS-run sessions stay authoritative and reusable).
+// path. The derivation is frozen, so ACEs materialized by earlier sessions of
+// this sandbox stay authoritative and reusable.
 std::wstring workspaceWriteSid(const std::wstring& workspaceRoot);
 
 // Deterministic S-1-4-x-y-1 capability SID derived from a private temp path
-// (byte-compatible with tempWriteSid).
+// (same frozen derivation, third subauthority fixed at 1).
 std::wstring tempWriteSid(const std::wstring& tempDir);
 
 // Convert an SDDL SID string to a freshly LocalAlloc'd SID (caller frees).

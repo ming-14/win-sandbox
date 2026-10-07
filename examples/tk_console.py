@@ -38,7 +38,7 @@ if (_ROOT / "dist" / "win_sandbox").is_dir():
 import win_sandbox  # noqa: E402
 
 DEFAULT_COMMAND = "cmd.exe /c start /wait cmd.exe /K"
-DEFAULT_WORKSPACE = str(Path.cwd())  # 启动时的工作目录（与 dsh 的 workspaceRoot: process.cwd() 一致）
+DEFAULT_WORKSPACE = str(Path.cwd())  # 启动时的工作目录（工作区默认取进程 cwd）
 
 
 # ── 参数规格表 ──────────────────────────────────────────────────────────

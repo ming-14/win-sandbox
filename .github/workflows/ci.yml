@@ -1,13 +1,12 @@
-# win-sandbox CI — 三架构构建 + 测试 + tag 发 Release
+# win-sandbox CI — 双架构构建 + 测试 + tag 发 Release
 #
 # 架构矩阵：
 #   x64   → windows-latest（amd64）
-#   x86   → windows-latest + 32 位 Python（win32）
 #   arm64 → windows-11-arm（native ARM64 runner）
 #
 # 触发：
 #   - push / PR（master、main）：构建 + 冒烟测试，上传 wheel 产物
-#   - tag v*：构建 + 测试 + 自动创建 GitHub Release（附三个 wheel）
+#   - tag v*：构建 + 测试 + 自动创建 GitHub Release（附两个 wheel）
 
 name: CI
 
@@ -23,7 +22,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ── 三架构构建 + 测试 ──────────────────────────────────────────────
+  # ── 双架构构建 + 测试 ──────────────────────────────────────────────
   build:
     name: build-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}

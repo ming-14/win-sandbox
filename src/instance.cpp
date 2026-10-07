@@ -216,7 +216,8 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     LocalFree(sid);
   }
 
-  // Private temp directory + its revocable capability. Every run gets one,
+  // Private temp directory + its revocable capability, named
+  // `winsandbox-<hex>` directly under the host temp root. Every run gets one,
   // read-only included: the ambient temp root is outside the write allowlist,
   // and a process that cannot write anywhere (DLL init, interpreters) fails
   // to start at all.
@@ -229,8 +230,10 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     }
     std::wstring root = tmpPath;
     for (int attempt = 0; attempt < 16; attempt++) {
-      wchar_t name[16] = {};
-      swprintf_s(name, L"dsh-%04x", GetTickCount() ^ (GetCurrentProcessId() << 8) ^ attempt);
+      // "winsandbox-" (11) + up to 8 hex digits + NUL: 32 wchar_t is ample.
+      wchar_t name[32] = {};
+      swprintf_s(name, L"winsandbox-%04x",
+                 GetTickCount() ^ (GetCurrentProcessId() << 8) ^ attempt);
       const std::wstring candidate = root + name;
       if (CreateDirectoryW(candidate.c_str(), nullptr) != 0 || GetLastError() == ERROR_ALREADY_EXISTS) {
         tempDir = candidate;

@@ -2,11 +2,10 @@
 //
 // The workspace write SID is a deterministic S-1-4-x-y derived from the
 // canonical workspace path; the temp SID is S-1-4-x-y-1 derived from the
-// private temp path. Derivation must be byte-compatible with the TS
-// workspaceWriteSid/tempWriteSid (node:crypto sha256, little-endian
-// readUInt32LE of the first eight digest bytes), so ACEs materialized by
-// earlier TS-run sessions keep working and the runner can verify --write-sid
-// against --workspace.
+// private temp path. The derivation is frozen (SHA-256 over the path material,
+// the first eight digest bytes read as little-endian uint32), so ACEs
+// materialized by earlier sessions keep working and re-materialization stays
+// idempotent.
 #include "winacl.h"
 
 #include <bcrypt.h>
@@ -50,8 +49,8 @@ std::array<uint8_t, 32> sha256(const uint8_t* data, size_t size) {
 
 namespace {
 
-// The TS derivation: (readUInt32LE % (2^30 - 1)) + 1 — node reads the first
-// four digest bytes as a little-endian uint32.
+// (readUInt32LE % (2^30 - 1)) + 1 — the first four digest bytes are read as a
+// little-endian uint32, then folded into a positive subauthority.
 uint32_t subauthority(const std::array<uint8_t, 32>& digest, size_t offset) {
   const uint32_t le = static_cast<uint32_t>(digest[offset])
       | (static_cast<uint32_t>(digest[offset + 1]) << 8)
@@ -61,9 +60,8 @@ uint32_t subauthority(const std::array<uint8_t, 32>& digest, size_t offset) {
 }
 
 std::wstring deriveSid(const std::string& material, int thirdSubauthority) {
-  // The TS derivation hashes "temp\0" + material for the temp SID — node's
-  // string update includes the NUL as data bytes, so build the material with
-  // an explicit embedded NUL.
+  // The temp SID's material is "temp\0" + the path: the NUL is part of the
+  // hashed bytes rather than a terminator, so it is embedded explicitly.
   const std::string utf8 = thirdSubauthority >= 0
       ? std::string("temp\0", 5) + material
       : material;

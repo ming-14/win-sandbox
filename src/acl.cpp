@@ -20,8 +20,9 @@
 namespace winacl {
 namespace {
 
-// <GetTempPathW()>\dsh-acl-locks\<sha256(lowercased path) 前16 hex>.lock —
-// the same lock-root convention as the TS implementation.
+// <GetTempPathW()>\winsandbox-acl-locks\<sha256(lowercased path) 前16 hex>.lock —
+// this repository's own lock root: every grantWrite/revokeWrite on the same
+// path serializes through the same lock file.
 std::wstring lockFilePath(const std::wstring& path) {
   wchar_t temp[MAX_PATH + 1] = {};
   const DWORD len = GetTempPathW(MAX_PATH + 1, temp);
@@ -34,14 +35,14 @@ std::wstring lockFilePath(const std::wstring& path) {
   lower.resize(static_cast<size_t>(mapped) - 1);  // strip the copied NUL
   const std::string utf8 = wideToUtf8(lower);
   // Reuse the shared SHA-256 (winacl::sha256, streaming BCrypt) on the UTF-8
-  // bytes, take the first 8 bytes as 16 hex chars (matches TS slice(0,16)).
+  // bytes, take the first 8 bytes as 16 hex chars.
   const std::array<uint8_t, 32> digest = sha256(
       reinterpret_cast<const uint8_t*>(utf8.data()), utf8.size());
   wchar_t hex[17] = {};
   for (int i = 0; i < 8; i++) {
     swprintf_s(hex + i * 2, 3, L"%02x", digest[i]);
   }
-  return std::wstring(temp) + L"dsh-acl-locks\\" + hex + L".lock";
+  return std::wstring(temp) + L"winsandbox-acl-locks\\" + hex + L".lock";
 }
 
 template <typename F>
