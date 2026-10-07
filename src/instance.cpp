@@ -12,9 +12,8 @@
 namespace winacl {
 namespace {
 
-// Reject an empty/whitespace-only command line up front: CreateProcessAsUserW
-// would otherwise fail with a less obvious error. The command line is passed
-// through verbatim (CreateProcessAsUserW does its own CommandLineToArgvW split).
+// Reject an empty/whitespace-only command line up front — CreateProcessAsUserW
+// would otherwise fail with a less obvious error.
 bool hasAnyArgument(const std::wstring& commandLine) {
   int argc = 0;
   wchar_t** argv = CommandLineToArgvW(commandLine.c_str(), &argc);
@@ -153,8 +152,6 @@ void SandboxedProcess::dispose() {
       // Best-effort: an unreachable temp grant is inert residue.
     }
     if (sid != nullptr) LocalFree(sid);
-    // std::filesystem::remove_all is unavailable here without extra includes;
-    // use the Windows API directly.
     const std::wstring pattern = tempDir_ + L"\\*";
     WIN32_FIND_DATAW fd{};
     HANDLE find = FindFirstFileW(pattern.c_str(), &fd);
@@ -195,10 +192,9 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
   // here at once: the standing-grant set and the process list need the lock.
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Materialize the workspace capability (standing) once per workspace.
-  // The workspace path is normalized (no trailing separator, canonical case)
-  // so the SID derivation matches the grant regardless of how the caller
-  // spelled the directory.
+  // Materialize the workspace capability (standing) once per workspace. The path
+  // is normalized (no trailing separator) so the derived SID matches the grant
+  // however the caller spelled the directory.
   std::wstring wsPath = workingDir;
   while (wsPath.size() > 3 && (wsPath.back() == L'\\' || wsPath.back() == L'/')) {
     wsPath.pop_back();
@@ -216,11 +212,9 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     LocalFree(sid);
   }
 
-  // Private temp directory + its revocable capability, named
-  // `winsandbox-<hex>` directly under the host temp root. Writable runs only:
-  // a read-only run is granted no writable resource at all, so it gets no
-  // private temp and TMP/TEMP stay at the host values (writes there are
-  // denied by the restricted token).
+  // Private temp directory + its revocable capability, `<host temp>\winsandbox-<hex>`,
+  // for writable runs only: a read-only run is granted no writable resource, so
+  // it gets no temp and TMP/TEMP stay at the host values.
   std::wstring tempDir;
   PSID tempSidPtr = nullptr;
   if (workspaceWrite) {
@@ -252,8 +246,6 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     }
   }
 
-  // Restricted token (the write whitelist: the workspace SID plus the private
-  // temp SID for writable runs; empty for read-only runs).
   std::vector<PSID> writeSids;
   PSID wsSidPtr = nullptr;
   PSID logonSid = nullptr;
@@ -266,21 +258,14 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
       writeSids.push_back(wsSidPtr);
       writeSids.push_back(tempSidPtr);
     }
-    // Both modes keep WRITE_RESTRICTED: the write whitelist is exactly the
-    // capability SIDs above — never a silently disabled mechanism. A read-only
-    // run holds no capability at all, so its whitelist is empty and the
+    // A read-only run holds no capability, so its whitelist is empty and the
     // restricting pass denies every file write.
     token = createRestrictedToken(writeSids, logonSid, worldSid);
-    // The default DACL must name one of the token's own restricting SIDs, or
-    // the child cannot create objects of its own (CreatePipe/CreateEvent come
-    // back ACCESS_DENIED). Grant the narrowest one available: the per-run temp
-    // SID for writable runs, else the logon SID — always in the restricting
-    // list, and far narrower than Everyone.
+    // The default DACL must name a restricting SID, or the child cannot create
+    // objects of its own (CreatePipe/CreateEvent come back ACCESS_DENIED).
+    // Narrowest available: the per-run temp SID, else the logon SID.
     const PSID defaultDaclSid = tempSidPtr != nullptr ? tempSidPtr : logonSid;
     setTokenDefaultDaclGrant(token, defaultDaclSid);
-    // 加固宿主进程 DACL：拒绝沙箱 restricting SIDs（logon SID + Everyone）对
-    // 宿主获得进程写类权限（PROCESS_TERMINATE 等）。fail-closed：失败即抛错，
-    // 子进程绝不带洞 spawn。
     hardenHostProcessDacl(logonSid, worldSid);
     LocalFree(logonSid);
     LocalFree(worldSid);
@@ -307,13 +292,11 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     throw;
   }
 
-  // Spawn (ConPTY when an HPCON is supplied; otherwise the launcher's own std
-  // handles or, with pipeStdio, three pipes of our own). A writable run's child
-  // environment is built explicitly with TMP/TEMP pointing at the granted
-  // private temp directory (its DLL initialization writes temporary files, and
-  // the WRITE_RESTRICTED intersection denies the ambient temp root). A
-  // read-only run gets no override: TMP/TEMP stay at the host values. The host
-  // environment is never modified (concurrent startProcess calls cannot race).
+  // Spawn: ConPTY when an HPCON is supplied, else the launcher's own std handles
+  // or three pipes of our own. A writable run's child gets TMP/TEMP pointed at
+  // its private temp directory (DLL initialization writes there, and the
+  // restricting pass denies the ambient temp root); a read-only run gets no
+  // override. The host environment is never modified, so spawns cannot race.
   const std::wstring* tempArg = tempDir.empty() ? nullptr : &tempDir;
   SpawnedChild child;
   try {

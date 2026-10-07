@@ -1,8 +1,8 @@
 # sandbox/src — in-process sandbox core (nanobind .pyd, the only C++ target).
 #
 # Two build modes:
-#   1. Direct CMake (standalone, e.g. via build.py):
-#        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+#   1. Direct CMake (standalone, e.g. via build.py): from the repo root,
+#        cmake -S src -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 #        cmake --build build
 #   2. Wheel (scikit-build-core, via pip wheel . / python -m build --wheel):
 #        reads pyproject.toml at project root, uses this dir as cmake.source-dir

@@ -1,13 +1,10 @@
 // token.cpp — WRITE_RESTRICTED token construction.
 //
-// Duplicates the caller's token into a write-restricted token whose
-// restricting-SID list is [logon SID, Everyone] plus the caller's capability
-// SIDs (the workspace SID plus the private temp SID for writable runs; none at
-// all for read-only runs). The logon SID + Everyone keep-alive group is shared
-// by both modes: early DLL init dies with 0xC0000142 and CNG crashes pwsh
-// without them, and the logon SID doubles as the read-only default-DACL grantee
-// (see setTokenDefaultDaclGrant). Every call is checked; any failure throws —
-// the child is never spawned unrestricted.
+// Duplicates the caller's token into a write-restricted one. The restricting
+// list always carries [logon SID, Everyone]: without that keep-alive group early
+// DLL init dies with 0xC0000142 and CNG crashes pwsh, and the logon SID doubles
+// as the read-only default-DACL grantee (see setTokenDefaultDaclGrant).
+// Fail-closed: any failure throws and the child is never spawned unrestricted.
 #include "winacl.h"
 
 #include <aclapi.h>
@@ -81,10 +78,8 @@ HANDLE createRestrictedToken(const std::vector<PSID>& writeSids, PSID& outLogonS
     std::vector<PSID> restricting;
     restricting.push_back(logonSid);
     restricting.push_back(worldSid);
-    // An empty whitelist is a legitimate mode, not a caller bug: a strictly
-    // read-only run holds no write capability, so the restricting list is just
-    // [logon SID, Everyone] and every write is denied. Writable runs always
-    // pass their capability SIDs in.
+    // An empty whitelist is legitimate, not a caller bug: a read-only run holds
+    // no write capability, so [logon SID, Everyone] alone denies every write.
     restricting.insert(restricting.end(), writeSids.begin(), writeSids.end());
 
     std::vector<SID_AND_ATTRIBUTES> list;
@@ -97,8 +92,8 @@ HANDLE createRestrictedToken(const std::vector<PSID>& writeSids, PSID& outLogonS
         || restricted == nullptr) {
       throw std::runtime_error("CreateRestrictedToken failed (Win32 " + std::to_string(GetLastError()) + ")");
     }
-    outLogonSid = logonSid;  // owned by the caller
-    logonSid = nullptr;      // ownership transferred
+    outLogonSid = logonSid;  // ownership moves to the caller
+    logonSid = nullptr;
     outWorldSid = worldSid;
     worldSid = nullptr;
     CloseHandle(current);
@@ -123,7 +118,6 @@ void setTokenDefaultDaclGrant(HANDLE token, PSID sid) {
   PACL current = reinterpret_cast<TOKEN_DEFAULT_DACL*>(buffer.data())->DefaultDacl;
   if (current == nullptr) throw std::runtime_error("the token carries no default DACL to extend");
 
-  // Build the EXPLICIT_ACCESS_W naming the restricting SID with FILE_ALL_ACCESS.
   EXPLICIT_ACCESS_W entry{};
   entry.grfAccessPermissions = FILE_ALL_ACCESS;
   entry.grfAccessMode = GRANT_ACCESS;
@@ -133,7 +127,8 @@ void setTokenDefaultDaclGrant(HANDLE token, PSID sid) {
   entry.Trustee.ptstrName = reinterpret_cast<LPWCH>(sid);
 
   PACL merged = nullptr;
-  const DWORD rc = SetEntriesInAclW(1, &entry, current, &merged);  if (rc != ERROR_SUCCESS || merged == nullptr) {
+  const DWORD rc = SetEntriesInAclW(1, &entry, current, &merged);
+  if (rc != ERROR_SUCCESS || merged == nullptr) {
     if (merged != nullptr) LocalFree(merged);
     throw std::runtime_error("SetEntriesInAclW(default DACL) failed (Win32 " + std::to_string(rc) + ")");
   }

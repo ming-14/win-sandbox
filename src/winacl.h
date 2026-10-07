@@ -1,11 +1,7 @@
-// winacl.h — shared definitions for the in-process Windows confinement core.
-//
-// Confines a child process under a WRITE_RESTRICTED token whose restricting
-// SIDs carry per-workspace and per-session-temp write capabilities, inside a
-// kill-on-close job, with the caller's stdio passed straight through
-// (inherited handles, self-built pipes, or an external ConPTY).
-// Fail-closed: every Win32 failure aborts before the child is spawned and
-// surfaces as a std::runtime_error carrying the Win32 error code.
+// winacl.h — shared definitions for the in-process Windows confinement core: a
+// WRITE_RESTRICTED token whose restricting SIDs carry the write capabilities,
+// inside a kill-on-close job, with the caller's stdio passed straight through.
+// Fail-closed: every Win32 failure throws before the child is spawned.
 #pragma once
 
 #define WIN32_LEAN_AND_MEAN
@@ -22,23 +18,20 @@ namespace winacl {
 // SHA-256 of a byte range (BCrypt streaming API; implemented in sid.cpp).
 std::array<uint8_t, 32> sha256(const uint8_t* data, size_t size);
 
-// The sandbox grant: FILE_GENERIC_WRITE minus READ_CONTROL plus DELETE and
-// FILE_DELETE_CHILD — "Modify" in Explorer/icacls. WRITE_DAC/WRITE_OWNER are
-// deliberately excluded so a confined child can never take ownership or
-// rewrite DACLs to escape the allowlist. Mirrors abi.GRANT_MASK (0x110156).
+// The sandbox grant = "Modify" (0x110156): FILE_GENERIC_WRITE minus READ_CONTROL
+// plus DELETE and FILE_DELETE_CHILD. WRITE_DAC/WRITE_OWNER are deliberately out,
+// so a confined child can never take ownership or rewrite DACLs to escape.
 constexpr DWORD kGrantMask = (FILE_GENERIC_WRITE | DELETE | FILE_DELETE_CHILD) & ~STANDARD_RIGHTS_WRITE;
 
 // Restricting-token flags: strip max privilege, synthesize the limited-user
-// (filtered admin) effect, and intersect write accesses with restricting-SID
-// grants — the core mechanism.
+// (filtered admin) effect, and intersect writes with restricting-SID grants.
 constexpr DWORD kRestrictFlags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
 constexpr DWORD kLuaFlags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN;
 
 // --- sid.cpp ----------------------------------------------------------------
 
-// Deterministic S-1-4-x-y capability SID derived from the canonical workspace
-// path. The derivation is frozen, so ACEs materialized by earlier sessions of
-// this sandbox stay authoritative and reusable.
+// Deterministic S-1-4-x-y capability SID for the canonical workspace path. The
+// derivation is frozen so ACEs from earlier sessions stay reusable.
 std::wstring workspaceWriteSid(const std::wstring& workspaceRoot);
 
 // Deterministic S-1-4-x-y-1 capability SID derived from a private temp path
@@ -51,37 +44,31 @@ PSID parseSid(const std::wstring& sddl);
 // --- token.cpp --------------------------------------------------------------
 
 // Build the write-restricted token. `writeSids` is the whole write whitelist:
-// empty for a read-only run, otherwise the workspace capability SID plus the
-// private temp capability SID. `outLogonSid`/`outWorldSid` receive the
-// keep-alive SIDs the caller owns (LocalFree).
+// empty for a read-only run, else the workspace + private temp capability SIDs.
+// `outLogonSid`/`outWorldSid` come back caller-owned (LocalFree).
 HANDLE createRestrictedToken(const std::vector<PSID>& writeSids,
                              PSID& outLogonSid, PSID& outWorldSid);
 
-// Merge a full-access ACE for `sid` into the token's default DACL so new
-// objects (anonymous pipes, loader events) the confined child creates pass the
-// restricting-SID write check. `sid` must be one of the token's restricting
-// SIDs; callers pass the narrowest one they hold — the per-run temp SID for
-// writable runs, the logon SID for read-only runs. Fails closed.
+// Merge a full-access ACE for `sid` into the token's default DACL, so objects
+// the confined child creates (pipes, events) pass the restricting-SID write
+// check. `sid` must be a restricting SID — the per-run temp SID, or the logon
+// SID for read-only runs.
 void setTokenDefaultDaclGrant(HANDLE token, PSID sid);
 
 // --- acl.cpp ----------------------------------------------------------------
 
-// Grant kGrantMask (OI|CI) to `sid` on `dir`, under a per-path lock. Skips the
-// SetNamedSecurityInfoW apply when the exact ACE already stands (avoiding a
-// repeat eager full-tree propagation). The directory must be caller-owned.
+// Grant kGrantMask (OI|CI) to `sid` on `dir`, under a per-path lock. The apply is
+// skipped when the exact ACE already stands: SetNamedSecurityInfoW would
+// otherwise re-propagate it across the whole tree.
 void grantWrite(const std::wstring& dir, PSID sid);
 
 // Remove every ACE for `sid` from `dir`'s DACL (other entries preserved).
 void revokeWrite(const std::wstring& dir, PSID sid);
 
-// Harden the host process DACL: deny the sandbox's restricting SIDs (logon SID
-// + Everyone) write-class process rights on the host — PROCESS_TERMINATE, VM
-// write, thread creation, handle duplication, suspend/resume, etc. Deny ACEs
-// precede the ambient Allows, so the child's WRITE_RESTRICTED pass-2 check
-// fails for those rights. The host itself is unaffected (its pseudo-handle and
-// own SID's full-control Allow ACE remain). Idempotent: when the exact Deny
-// ACEs already stand, the apply is skipped. Fails closed: any Win32 failure
-// throws before the child spawns.
+// Deny the sandbox's restricting SIDs (logon SID + Everyone) write-class process
+// rights on the host — PROCESS_TERMINATE, VM write, thread creation, handle
+// duplication, etc. — so the child's restricting pass-2 check fails for them.
+// Idempotent; fails closed before the spawn.
 void hardenHostProcessDacl(PSID logonSid, PSID worldSid);
 
 // --- job.cpp ----------------------------------------------------------------
@@ -93,20 +80,19 @@ struct ResourceLimits {
   uint64_t cpuMs = 0;             // per-job CPU time (JOB_TIME)
   uint32_t cpuRatePercent = 0;    // CPU rate hard cap (Win8+; 0 = off)
   uint32_t maxProcesses = 0;      // active-process limit
-  uint64_t wallClockMs = 0;       // wall-clock timeout, enforced by the launcher
+  uint64_t wallClockMs = 0;       // wall-clock timeout (launcher-enforced)
   bool noUi = false;              // Job UI restrictions (handles/system/display/atoms)
   bool crashSilent = false;       // DIE_ON_UNHANDLED_EXCEPTION
-  bool breakawayOk = false;       // allow children to break away from the job
+  bool breakawayOk = false;       // allow children to break away
 };
 
 /** Why a confined run ended, for the exit protocol. */
 enum class LimitKind { None, Cpu, Memory, ProcessCount, Timeout, User };
 
 /**
- * One confined run's job: created with the resource limits, associated with
- * an IOCP whose thread terminates the whole job on a hard-limit notification
- * (END_OF_JOB_TIME / PROCESS_MEMORY_LIMIT / JOB_MEMORY_LIMIT) — Windows does
- * NOT auto-kill on limit notifications, so the handling side must.
+ * One confined run's job, plus the IOCP thread that terminates it on a hard-limit
+ * notification (END_OF_JOB_TIME / PROCESS_MEMORY_LIMIT / JOB_MEMORY_LIMIT) —
+ * Windows does not auto-kill on those.
  */
 class Job {
 public:
@@ -137,13 +123,10 @@ private:
 
 // --- spawn.cpp --------------------------------------------------------------
 
-// Spawn `commandLine` under `token`: CREATE_SUSPENDED, assigned to `job`, then
-// resumed. The child's environment is built from the host's with TMP/TEMP
-// pointing at the granted private temp directory when one is supplied.
-// Returns the child process handle (owned) and pid, plus — for the piped shape
-// — the parent's end of each pipe (nullptr otherwise). Those three handles
-// belong to the caller from the moment the spawn returns; the sandbox process
-// object never closes them.
+// One spawned child: the process handle (owned) and pid, plus the parent's end of
+// each pipe for the piped shape (nullptr otherwise). Those three handles belong
+// to the caller from the moment the spawn returns; the sandbox process object
+// never closes them.
 struct SpawnedChild {
   HANDLE process;
   DWORD pid;
@@ -159,22 +142,17 @@ SpawnedChild spawnSandboxedInherited(HANDLE token, HANDLE job, const std::wstrin
                                      const std::wstring* tempDir = nullptr,
                                      const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
 
-// Spawn with three anonymous pipes created here: the child gets the read end
-// of stdin and the write ends of stdout/stderr, while the returned
-// stdInWrite/stdOutRead/stdErrRead are the opposite ends for the caller to
-// write to and read from. Same spawn core as the inherited shape.
+// Spawn with three anonymous pipes created here: the child gets stdin's read end
+// and stdout/stderr's write ends; the caller gets the opposite ends.
 SpawnedChild spawnSandboxedPiped(HANDLE token, HANDLE job, const std::wstring& commandLine,
                                  const std::wstring& cwd, bool newProcessGroup,
                                  const std::wstring* tempDir = nullptr,
                                  const std::map<std::wstring, std::wstring>* envOverrides = nullptr);
 
-// Spawn under an external ConPTY handle (hpcon): the child's stdio is driven
-// by the pseudo console, not by the launcher's handles. bInheritHandles=FALSE
-// + EXTENDED_STARTUPINFO_PRESENT + the PSEUDOCONSOLE thread attribute; the
-// child is assigned to the job immediately after the spawn (no SUSPENDED —
-// a suspended primary thread fails DLL initialization under the pseudo
-// console). `tempDir`, when non-null, redirects TMP/TEMP in the child's
-// environment block.
+// Spawn under an external ConPTY handle: the pseudo console drives the child's
+// stdio. bInheritHandles=FALSE + EXTENDED_STARTUPINFO_PRESENT + the
+// PSEUDOCONSOLE thread attribute, and no CREATE_SUSPENDED — a suspended primary
+// thread fails DLL initialization under a pseudo console.
 SpawnedChild spawnSandboxedConPTY(HANDLE token, HANDLE job, HPCON hpcon,
                                   const std::wstring& commandLine,
                                   const std::wstring& cwd,

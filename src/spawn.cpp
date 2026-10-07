@@ -1,11 +1,9 @@
 // spawn.cpp — spawn the confined child under the restricted token.
 //
 // Three stdio shapes share one spawn core (`spawnWithStdio`): the caller's own
-// std handles (inherited), three anonymous pipes created here, or an external
-// HPCON driving a pseudo console. Every shape builds the child's environment
-// block explicitly from the host environment, redirecting TMP/TEMP to the
-// granted private temp directory when the run has one (writable runs) — the
-// host environment is never modified, so concurrent spawns cannot race.
+// std handles, pipes created here, or an external HPCON pseudo console. The
+// child's environment block is always built explicitly — the host environment is
+// never modified, so concurrent spawns cannot race.
 #include "winacl.h"
 
 #include <wincon.h>
@@ -17,11 +15,10 @@
 namespace winacl {
 namespace {
 
-// Copy the host environment block, replacing TMP/TEMP with the private temp
-// directory when one is supplied and then applying the caller's overrides. A
-// later entry for a name already present (matched case-insensitively, the way
-// Windows resolves environment names) replaces the earlier one in place, so an
-// override really overrides. Returns a double-NUL-terminated block.
+// Copy the host environment block, redirecting TMP/TEMP when a private temp
+// directory is supplied, then applying the caller's overrides — matched
+// case-insensitively the way Windows resolves names, so an override really
+// overrides. Returns a double-NUL-terminated block.
 std::vector<wchar_t> buildEnvBlock(const std::wstring* tempDir,
                                    const std::map<std::wstring, std::wstring>* overrides) {
   struct EnvGuard {
@@ -80,8 +77,8 @@ std::vector<wchar_t> buildEnvBlock(const std::wstring* tempDir,
   return out;
 }
 
-// Fill a one-entry process/thread attribute list into a caller-owned buffer, so
-// the buffer never moves after the list pointer is derived from it.
+// Fill a one-entry attribute list into a caller-owned buffer, so the buffer
+// never moves after the list pointer is derived from it.
 void buildAttributeList(std::vector<uint8_t>& buf, const void* value, SIZE_T valueSize,
                         DWORD attribute) {
   SIZE_T attrSize = 0;
@@ -101,10 +98,9 @@ void buildAttributeList(std::vector<uint8_t>& buf, const void* value, SIZE_T val
 }
 
 // The spawn core shared by the inherited and piped shapes: HANDLE_LIST
-// whitelists exactly the three std handles (no stray inheritable handle leaks
-// into the confined child), CREATE_SUSPENDED keeps the job assignment free of
-// an escape window, and the primary thread is resumed only after the child is
-// in the kill-on-close job.
+// whitelists exactly the three std handles, so no stray inheritable handle leaks
+// into the child; CREATE_SUSPENDED keeps the job assignment free of an escape
+// window, and the thread is resumed only once the child is in the job.
 SpawnedChild spawnWithStdio(HANDLE token, HANDLE job, const std::wstring& commandLine,
                             const std::wstring& cwd, bool newProcessGroup,
                             const std::wstring* tempDir,
@@ -264,9 +260,8 @@ SpawnedChild spawnSandboxedConPTY(HANDLE token, HANDLE job, HPCON hpcon,
     ~AttrGuard() { DeleteProcThreadAttributeList(list); }
   } guard{attrList};
 
-  // STARTF_USESTDHANDLES must still be set with NULL handles or the stdio copy
-  // path is not activated and the pseudo console is ignored under
-  // CreateProcessAsUserW (win-sandbox's empirical finding).
+  // STARTF_USESTDHANDLES must still be set with NULL handles, or the stdio copy
+  // path is not activated and CreateProcessAsUserW ignores the pseudo console.
   STARTUPINFOEXW siex{};
   siex.StartupInfo.cb = sizeof(siex);
   siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;

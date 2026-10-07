@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""sandbox 独立构建脚本（Windows 专属，nanobind + CMake + MSVC）。
+"""sandbox 独立构建脚本（Windows 专属，nanobind + CMake + MSVC）
 
-编译 win_sandbox_native.pyd 并组装可分发的 win_sandbox Python 包。
-按主机架构构建（x64 / arm64）；交叉编译请用 CI 矩阵或 wheel 构建。
-
-用法:
-    python build.py                         # 增量构建（默认 Release，输出到 dist/win_sandbox）
-    python build.py --clean                 # 删除 src/build 强制全量重新生成
-    python build.py --config Debug          # 选择配置
-    python build.py --out <dir>             # 指定输出目录
-    python build.py --selftest              # 编译并运行 selftest.exe（不经绑定层）
-    python build.py --verbose               # 详细日志
+编译 win_sandbox_native.pyd 并组装可分发的 win_sandbox Python 包。按主机架构构建
+（x64 / arm64）；交叉编译请用 CI 矩阵或 wheel 构建。参数见 --help
 """
 
 import argparse
@@ -28,7 +20,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SRC_DIR = SCRIPT_DIR / "src"
-BUILD_DIR = SRC_DIR / "build"
+BUILD_DIR = SCRIPT_DIR / "build"
 PYTHON_SRC_DIR = SRC_DIR / "python" / "win_sandbox"
 
 IS_WINDOWS = sys.platform == "win32"
@@ -47,7 +39,7 @@ logger = logging.getLogger("sandbox-build")
 # =============================================================================
 
 def run_cmd(args, cwd=None):
-    """运行外部命令并返回退出码。"""
+    """运行外部命令并返回退出码"""
     proc = subprocess.Popen(args, cwd=cwd)
     try:
         return proc.wait()
@@ -59,7 +51,7 @@ def run_cmd(args, cwd=None):
 
 
 def find_vcvars(vcvars_name):
-    """定位 vcvars*.bat：优先 vswhere 探测实际安装，回退常见版本/版本目录路径。"""
+    """定位 vcvars*.bat：优先 vswhere 探测实际安装，回退常见版本/版本目录路径"""
     vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / \
         "Microsoft Visual Studio/Installer/vswhere.exe"
     if vswhere.is_file():
@@ -85,7 +77,7 @@ def find_vcvars(vcvars_name):
 
 
 def write_cmd_wrapper(prefix, lines):
-    """写临时 .cmd 脚本（vcvars 环境注入/跨进程环境配置只能经 cmd 执行）。"""
+    """写临时 .cmd 脚本（vcvars 环境注入/跨进程环境配置只能经 cmd 执行）"""
     cmd_file = Path(tempfile.gettempdir()) / "{}_{}.cmd".format(prefix, uuid.uuid4().hex[:8])
     content = "@echo off\nchcp 65001 >nul\n" + "\n".join(lines) + "\nexit /b %errorlevel%\n"
     encoding = "cp{}".format(ctypes.windll.kernel32.GetACP()) if IS_WINDOWS else "utf-8"
@@ -99,7 +91,6 @@ def write_cmd_wrapper(prefix, lines):
 
 
 def setup_logging(verbose: bool):
-    """配置日志系统。"""
     if IS_WINDOWS:
         try:
             ctypes.windll.kernel32.SetConsoleOutputCP(65001)
@@ -122,7 +113,7 @@ def setup_logging(verbose: bool):
 # =============================================================================
 
 def build_sandbox(config: str, clean: bool, output_dir: Path, arch: tuple):
-    """编译 win_sandbox_native.pyd 并组装 Python 包。"""
+    """编译 win_sandbox_native.pyd 并组装 Python 包"""
     vcvars_name, cmake_arch = arch
 
     cmake = shutil.which("cmake")
@@ -137,7 +128,7 @@ def build_sandbox(config: str, clean: bool, output_dir: Path, arch: tuple):
     logger.info("%s: %s", vcvars_name, vcvars)
 
     # Ninja 是单架构生成器：架构由 vcvars 环境中的编译器决定，无需 -A；
-    # 未安装 Ninja 时回退 Visual Studio 多架构生成器（需 -A 指定平台）。
+    # 未安装 Ninja 时回退 Visual Studio 多架构生成器（需 -A 指定平台）
     ninja = shutil.which("ninja")
     if ninja:
         generator = "Ninja"
@@ -200,7 +191,7 @@ def build_sandbox(config: str, clean: bool, output_dir: Path, arch: tuple):
 
 
 def build_selftest(arch: tuple):
-    """编译并运行 selftest.exe（不经绑定层，隔离 C++ 核心崩溃）。"""
+    """编译并运行 selftest.exe（不经绑定层，隔离 C++ 核心崩溃）"""
     vcvars_name, _ = arch
     vcvars = find_vcvars(vcvars_name)
     if not vcvars:
@@ -221,7 +212,9 @@ def build_selftest(arch: tuple):
     cmd_file = write_cmd_wrapper("selftest", lines)
     logger.info("编译 selftest.exe ...")
     try:
-        rc = run_cmd(["cmd", "/c", str(cmd_file)])
+        # cwd=BUILD_DIR：源文件与产物路径都是绝对的，cl 的中间 .obj 就落在构建
+        # 目录里，不会撒到仓库根
+        rc = run_cmd(["cmd", "/c", str(cmd_file)], cwd=BUILD_DIR)
     finally:
         cmd_file.unlink(missing_ok=True)
 
@@ -254,7 +247,7 @@ def parse_args(argv=None):
   python build.py --selftest              # 编译并运行自测
 """)
     parser.add_argument("--clean", action="store_true",
-                        help="删除 src/build 强制全量重新生成")
+                        help="删除 build/ 强制全量重新生成")
     parser.add_argument("--config", default="Release",
                         choices=["Debug", "Release", "RelWithDebInfo", "MinSizeRel"],
                         help="CMake 构建配置（默认 Release）")

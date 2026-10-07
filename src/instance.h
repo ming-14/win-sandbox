@@ -1,15 +1,8 @@
-// instance.h — in-process sandbox instance and per-process handle.
-//
-// The nanobind-facing core: SandboxInstance materializes the workspace/temp
-// capability grants, builds the WRITE_RESTRICTED token, and spawns confined
-// processes under a Job with optional resource limits. SandboxedProcess owns
-// one confined run's handles (process/token/job/private temp) and answers
-// wait/terminate/signal/process-tree queries in-process — no IPC, no protocol
-// lines. Stdio comes from one of three shapes: the launcher's own std handles,
-// three pipes created here (their parent ends come back on the process object),
-// or an external HPCON. An external HPCON is usable directly because the pseudo
-// console is created by the host process (the same process that calls
-// CreateProcessAsUserW).
+// instance.h — in-process sandbox instance and per-process handle: the
+// nanobind-facing core that materializes the capability grants, builds the
+// restricted token, and spawns under a Job. Everything is in-process — no IPC,
+// no protocol lines — which is also why an external HPCON works directly: the
+// pseudo console belongs to the same process that calls CreateProcessAsUserW.
 #pragma once
 
 #include "winacl.h"
@@ -41,14 +34,11 @@ inline const char* limitKindString(LimitKind kind) {
 }
 
 /**
- * One confined run: the spawned primary process plus its job, token, private
- * temp directory (writable runs only), and settled exit facts. A private temp
- * directory, when present, is self-managed: dispose() revokes its capability
- * grant and removes it.
+ * One confined run: process, job, token, private temp directory (writable runs
+ * only), settled exit facts. A temp directory, when present, is self-managed.
  *
- * Ownership: SandboxInstance keeps a shared_ptr per process; PyProcess holds
- * another. The object survives shutdown (disposed) so Python wrappers never
- * dangle.
+ * Ownership: SandboxInstance keeps a shared_ptr per process and PyProcess holds
+ * another; the object survives shutdown (disposed) so wrappers never dangle.
  */
 class SandboxedProcess {
 public:
@@ -70,16 +60,14 @@ public:
   /** Live process ids in the job. */
   std::vector<DWORD> queryProcessList();
 
-  /** The parent's end of the pipes: what to write the child's stdin with and
-   *  what to read its stdout/stderr from. Nullptr unless the run was spawned
-   *  with pipes — and the caller owns them from that moment on. */
+  /** The parent's end of the pipes, nullptr unless spawned with pipes. The
+   *  caller owns them from that moment on. */
   HANDLE stdInWrite() const { return child_.stdInWrite; }
   HANDLE stdOutRead() const { return child_.stdOutRead; }
   HANDLE stdErrRead() const { return child_.stdErrRead; }
 
-  /** Release handles, revoke the temp grant, remove the temp dir. The pipe
-   *  ends above belong to the caller and are left untouched.
-   *  Idempotent; after this the object answers no live queries. */
+  /** Release handles, revoke the temp grant, remove the temp dir; the pipe ends
+   *  above are left untouched. Idempotent; afterwards no live queries. */
   void dispose();
 
 private:
@@ -101,11 +89,9 @@ private:
 };
 
 /**
- * One sandbox: owns the per-workspace standing grants, the live processes,
- * and their private-temp grants. startProcess materializes the capabilities,
- * builds the restricted token, and spawns; shutdown/dispose terminates every
- * live process, revokes the temp grants, and removes the private temp
- * directories (workspace ACEs stand — the reuse cache).
+ * One sandbox: the per-workspace standing grants (the reuse cache) and the live
+ * processes. shutdown/dispose terminates every live process, revokes the temp
+ * grants and removes the private temp directories; workspace ACEs stand.
  */
 class SandboxInstance {
 public:
@@ -118,20 +104,18 @@ public:
    * Spawn one confined process.
    * @param commandLine - full command line (CreateProcessAsUserW splits it).
    * @param workingDir - workspace root (must exist; becomes the workspace).
-   * @param workspaceWrite - true = the workspace is writable and the run gets
-   *                         its own writable private temp directory; false =
-   *                         strictly read-only: no workspace grant, no private
-   *                         temp, TMP/TEMP left at the host values, and an
-   *                         empty write whitelist.
+   * @param workspaceWrite - true = workspace writable, plus a private writable
+   *                         temp directory; false = strictly read-only: no
+   *                         workspace grant, no private temp, TMP/TEMP left at
+   *                         the host values, empty write whitelist.
    * @param limits - resource limits (zeros = unlimited).
-   * @param hpcon - external pseudo console handle, or nullptr to use one of the
-   *                two handle shapes below.
-   * @param envOverrides - child environment entries; an entry whose name is
-   *                      already present replaces it (may be null).
-   * @param pipeStdio - with hpcon null: hand the child three anonymous pipes
-   *                    instead of the launcher's own std handles. The parent's
-   *                    ends come back on the process object.
-   * @returns the process object (shared ownership: instance + PyProcess).
+   * @param hpcon - external pseudo console handle, or nullptr for one of the
+   *                handle shapes below.
+   * @param envOverrides - entries whose name is already present replace it.
+   * @param pipeStdio - with hpcon null: three anonymous pipes instead of the
+   *                    launcher's own std handles; the parent's ends come back
+   *                    on the process object.
+   * @returns the process object (shared with PyProcess).
    */
   std::shared_ptr<SandboxedProcess> startProcess(
       const std::wstring& commandLine, const std::wstring& workingDir, bool workspaceWrite,

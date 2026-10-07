@@ -1,26 +1,21 @@
-"""win_sandbox 的 Tk 控制台。
+"""win_sandbox 的 Tk 控制台
 
-设计取向：**面板的主要用途是看日志、偶尔调一个参数**，所以不给 15 个参数
-各摆一个常驻输入框。参数规格表里的项全量铺在一张表里（未覆盖显示"—"），
-改值全在表里原地完成：双击即改——text/int 在"值"列上就地输入（回车提交、
-Esc 取消、失焦提交、非法值标红不落盘），布尔项翻转否/是，路径弹系统文件夹
-选择器；「置空」把覆盖项删掉回默认值，省下的面积给日志。
+面板只当遥控器：真正交互的 cmd 跑在新窗口里，面板不接管标准句柄。全部参数铺在一张
+规格表里双击就地改（规则见下方规格表注释），省下的面积给日志
 
-面板只当遥控器——真正交互的 cmd 跑在新窗口里，面板不接管标准句柄。
-
-关于默认命令 `cmd.exe /c start /wait cmd.exe /K`：
-  - `/wait` 让会话等那个窗口关掉，`/K` 让新窗口停在提示符。
-  - 不能写 `start "标题" cmd`：命令行是原样交给 CreateProcessAsUserW 的，
-    cmd 见到带引号的首参就当窗口标题，后面的程序名反而成了标题。
-  - 新窗口里的 cmd 带受限令牌，且仍在同一个 Job 里。Job 是 KILL_ON_CLOSE，
-    所以关面板前必须先 terminate，否则整棵树跟着走。
+默认命令 `cmd.exe /c start /wait cmd.exe /K` 的三点注意：
+  - `/wait` 让会话等窗口关掉，`/K` 让新窗口停在提示符
+  - 不能写 `start "标题" cmd`：命令行原样交给 CreateProcessAsUserW，cmd 会把带引号的
+    首参当窗口标题
+  - 新窗口的 cmd 仍带受限令牌、仍在同一个 Job 里；Job 是 KILL_ON_CLOSE，所以关面板
+    前必须先 terminate，否则整棵树跟着走
 
 用法（必须用 python，不能用 pythonw）：
 
     python examples/tk_console.py
 
-start_process 走继承 stdio 路径，要求面板自己有有效标准句柄；pythonw 是
-GUI 子系统没有控制台，那条路径会抛 "GetStdHandle returned an invalid handle"。
+面板走继承 stdio 路径，要求自己有有效标准句柄；pythonw 是 GUI 子系统、没有控制台，
+那条路径会抛 "GetStdHandle returned an invalid handle"
 """
 
 from __future__ import annotations
@@ -42,10 +37,10 @@ DEFAULT_WORKSPACE = str(Path.cwd())  # 启动时的工作目录（工作区默�
 
 
 # ── 参数规格表 ──────────────────────────────────────────────────────────
-# 界面完全由这张表驱动：表里有几行界面就摆几行，加参数不用改任何界面代码。
-# key 以 "quota." 开头的归入 start_process 的 quota dict，其余是直接入参。
+# 界面完全由这张表驱动：表里有几行界面就摆几行，加参数不用改任何界面代码
+# key 以 "quota." 开头的归入 start_process 的 quota dict，其余是直接入参
 # kind: text | dir | int | bool；值列显示"—"表示未覆盖（走默认），
-# bool 只有否/是（默认否，双击翻转），dir 用文件夹选择器。
+# bool 只有否/是（默认否，双击翻转），dir 用文件夹选择器
 @dataclass(frozen=True)
 class Param:
     key: str
@@ -77,7 +72,7 @@ PARAM_BY_KEY = {p.key: p for p in PARAMS}
 
 
 def coerce(param: Param, raw):
-    """界面原始值 → API 需要的类型；非法就抛 ValueError。"""
+    """界面原始值 → API 需要的类型；非法就抛 ValueError"""
     if param.kind == "bool":
         return bool(raw)
     text = str(raw).strip()
@@ -103,7 +98,7 @@ def coerce(param: Param, raw):
 
 @dataclass
 class Overrides:
-    """界面上"与默认不同"的项。命令与可写开关是常驻项。"""
+    """界面上"与默认不同"的项。命令与可写开关是常驻项"""
 
     command_line: str = DEFAULT_COMMAND
     workspace_write: bool = True
@@ -118,7 +113,7 @@ class Overrides:
                 if k.startswith("quota.")}
 
     def arguments(self) -> dict:
-        """start_process 的位置/关键字参数（不含 quota、env）。"""
+        """start_process 的位置/关键字参数（不含 quota、env）"""
         out: dict = {
             "command_line": self.command_line,
             "working_dir": self.workspace(),
@@ -131,7 +126,7 @@ class Overrides:
 
 
 class Session:
-    """一次沙箱会话：spawn → 退出监视 → 进程树查询。"""
+    """一次沙箱会话：spawn → 退出监视 → 进程树查询"""
 
     def __init__(self, emit: Callable[[str], None]) -> None:
         self._emit = emit
@@ -154,7 +149,7 @@ class Session:
             return False  # 已 dispose
 
     def tree(self) -> list[int]:
-        """Job 内全部 pid（新窗口的 cmd 与它的子进程都在）。"""
+        """Job 内全部 pid（新窗口的 cmd 与它的子进程都在）"""
         if not self.running:
             return []
         try:
@@ -190,7 +185,7 @@ class Session:
         self._watch.start()
 
     def terminate(self) -> None:
-        """杀整棵进程树（Job 内全部进程），新窗口一起关。"""
+        """杀整棵进程树（Job 内全部进程），新窗口一起关"""
         if self._proc is None:
             return
         try:
@@ -199,7 +194,7 @@ class Session:
             pass  # 已退出
 
     def close(self) -> None:
-        """终止会话并关闭沙箱实例。幂等。"""
+        """终止会话并关闭沙箱实例。幂等"""
         self.terminate()
         if self._watch is not None:
             self._watch.join(timeout=3.0)
@@ -228,7 +223,7 @@ class Session:
 
 
 class EnvDialog:
-    """环境变量覆盖：每行 KEY=VALUE，实时校验。"""
+    """环境变量覆盖：每行 KEY=VALUE，实时校验"""
 
     def __init__(self, parent, current: dict) -> None:
         import tkinter as tk
@@ -363,7 +358,7 @@ class Console:
         panes = ttk.PanedWindow(self.root, orient="horizontal")
         panes.pack(fill="both", expand=True, padx=10, pady=(0, 6))
 
-        # 左：配置表——规格表全量铺开，值列"—"表示未覆盖（走默认）。
+        # 左：配置表——规格表全量铺开，值列"—"表示未覆盖（走默认）
         left = ttk.Frame(panes, width=400)
         panes.add(left, weight=0)
 
@@ -449,21 +444,21 @@ class Console:
         return selection[0] if selection else None
 
     def _current(self, param: Param):
-        """该参数的现值：未覆盖时给默认值（工作区给启动 cwd）。"""
+        """该参数的现值：未覆盖时给默认值（工作区给启动 cwd）"""
         value = self._overrides.values.get(param.key)
         if value is None and param.key == "working_dir":
             value = self._overrides.workspace()
         return value
 
     def _locked(self) -> bool:
-        """运行中不让改配置（和原来「运行中禁用编辑按钮」同一条规矩）。"""
+        """运行中不让改配置（和原来「运行中禁用编辑按钮」同一条规矩）"""
         if self._session.running:
             self._log("会话运行中：先「关闭实例」再改配置", err=True)
             return True
         return False
 
     def _on_double(self, event) -> None:
-        """双击一行：bool 原地翻转 / dir 弹文件夹选择器 / 其余原地编辑值列。"""
+        """双击一行：bool 原地翻转 / dir 弹文件夹选择器 / 其余原地编辑值列"""
         param = PARAM_BY_KEY.get(self.tree.identify_row(event.y))
         if param is None or self._locked():
             return
@@ -483,7 +478,7 @@ class Console:
     # ── 原地编辑（text / int） ─────────────────────────────
 
     def _begin_edit(self, key: str) -> None:
-        """把浮层 Entry 叠在"值"单元格上，就地输入。"""
+        """把浮层 Entry 叠在"值"单元格上，就地输入"""
         from tkinter import ttk
 
         if self._editor is not None:  # 已在编辑别的行：先把上一处收掉
@@ -506,7 +501,7 @@ class Console:
         self._validate_editor()
 
     def _check(self, key: str | None, raw: str):
-        """coerce 校验；返回 (值, 错误文案)，合法时错误为 None。"""
+        """coerce 校验；返回 (值, 错误文案)，合法时错误为 None"""
         if key is None:
             return None, "没有正在编辑的参数"
         try:
@@ -516,11 +511,11 @@ class Console:
 
     @staticmethod
     def _is_clear(key: str, raw: str) -> bool:
-        """输入框清空 = 想置空（bool 没有空值一说）。"""
+        """输入框清空 = 想置空（bool 没有空值一说）"""
         return PARAM_BY_KEY[key].kind != "bool" and not raw.strip()
 
     def _validate_editor(self) -> None:
-        """输入即校验：非法值换红字样式，原文案挂在表格下方。"""
+        """输入即校验：非法值换红字样式，原文案挂在表格下方"""
         editor = self._editor
         if editor is None:
             return
@@ -534,7 +529,7 @@ class Console:
         self.lbl_error.configure(text=error or "")
 
     def _commit_editor(self, keep_on_error: bool = False) -> None:
-        """回车（keep_on_error=True）：非法就留在编辑态；失焦：非法当取消。"""
+        """回车（keep_on_error=True）：非法就留在编辑态；失焦：非法当取消"""
         editor = self._editor
         if editor is None:
             return
@@ -566,7 +561,7 @@ class Console:
             editor.destroy()
 
     def _pick_dir(self, param: Param, current) -> str | None:
-        """系统文件夹选择器；取消返回 None，选中返回规范化路径。"""
+        """系统文件夹选择器；取消返回 None，选中返回规范化路径"""
         from tkinter import filedialog
 
         start = str(current) if current else self._overrides.workspace()
@@ -584,7 +579,7 @@ class Console:
         self._on_clear_key(self._selected_key())
 
     def _on_clear_key(self, key: str | None) -> None:
-        """置空：删掉这项覆盖，回到规格/默认值。"""
+        """置空：删掉这项覆盖，回到规格/默认值"""
         if key is None or self._locked():
             return
         param = PARAM_BY_KEY[key]
@@ -682,7 +677,7 @@ class Console:
     # ── 日志 ────────────────────────────────────────────────
 
     def _queue_log(self, line: str) -> None:
-        """后台线程入口：只入队，UI 线程统一刷。"""
+        """后台线程入口：只入队，UI 线程统一刷"""
         self._log_queue.append(line)
 
     def _log(self, line: str, *, err: bool = False, ok: bool = False) -> None:

@@ -106,8 +106,7 @@ void mergeAndApply(const std::wstring& path, const EXPLICIT_ACCESS_W& entry, PAC
   }
 }
 
-// True when the explicit DACL already carries the exact grant this module
-// adds: Allow ACE, OI|CI inheritance, kGrantMask, the capability SID.
+// Idempotency guard: the exact grant ACE already stands.
 bool hasExactGrant(PACL acl, PSID sid) {
   if (acl == nullptr) return false;
   for (DWORD i = 0; i < acl->AceCount; i++) {
@@ -156,18 +155,16 @@ void revokeWriteLocked(const std::wstring& path, PSID sid) {
 
 // Write-class process rights a confined child must never hold on the host:
 // termination, memory write, thread/process creation, handle duplication,
-// suspend/resume, quota/limit mutation, DELETE and the DACL/owner writes that
-// would let it rewrite the boundary itself. Read-class rights (query, VM read,
-// synchronize, read-control) stay allowed — process visibility is outside the
-// sandbox vocabulary.
+// suspend/resume, quota mutation, DELETE and the DACL/owner writes that would
+// let it rewrite the boundary. Read-class rights stay allowed.
 constexpr DWORD kDenyProcessMask =
     PROCESS_TERMINATE | PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION |
     PROCESS_VM_WRITE | PROCESS_DUP_HANDLE | PROCESS_CREATE_PROCESS |
     PROCESS_SET_QUOTA | PROCESS_SET_INFORMATION | PROCESS_SUSPEND_RESUME |
     PROCESS_SET_LIMITED_INFORMATION | DELETE | WRITE_DAC | WRITE_OWNER;
 
-// True when `acl` already carries a Deny ACE for `sid` covering every bit of
-// `mask` (idempotency guard for hardenHostProcessDacl).
+// Idempotency guard for hardenHostProcessDacl: a Deny ACE for `sid` covering
+// every bit of `mask` already stands.
 bool hasExactDenyAce(PACL acl, PSID sid, DWORD mask) {
   if (acl == nullptr) return false;
   for (DWORD i = 0; i < acl->AceCount; i++) {
@@ -184,7 +181,6 @@ bool hasExactDenyAce(PACL acl, PSID sid, DWORD mask) {
 }  // namespace
 
 void hardenHostProcessDacl(PSID logonSid, PSID worldSid) {
-  // Read the host process's current DACL (SE_KERNEL_OBJECT, DACL only).
   PACL currentDacl = nullptr;
   PSECURITY_DESCRIPTOR descriptor = nullptr;
   const DWORD getRc = GetSecurityInfo(GetCurrentProcess(), SE_KERNEL_OBJECT,
@@ -200,8 +196,7 @@ void hardenHostProcessDacl(PSID logonSid, PSID worldSid) {
     LocalFree(descriptor);
     return;
   }
-  // Build the two Deny ACEs (logon SID + Everyone); SetEntriesInAclW orders
-  // Deny entries ahead of the ambient Allows.
+  // SetEntriesInAclW orders Deny entries ahead of the ambient Allows.
   EXPLICIT_ACCESS_W entries[2] = {};
   for (EXPLICIT_ACCESS_W& entry : entries) {
     entry.grfAccessPermissions = kDenyProcessMask;

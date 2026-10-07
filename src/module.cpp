@@ -1,10 +1,7 @@
-// module.cpp — nanobind extension entry for the in-process sandbox.
+// module.cpp — nanobind entry point: SandboxInstance and Process for Python.
 //
-// Exposes SandboxInstance and SandboxedProcess to Python via nanobind
-// (stable-ABI-compatible binding layer). The C++ core
-// (WRITE_RESTRICTED token + capability-SID write allowlist + Job resource
-// limits) loads into the Python interpreter process, so handles (HPCON
-// included) are shared directly — no IPC, no protocol lines.
+// The C++ core loads into the interpreter process, so handles (HPCON included)
+// are shared directly — no IPC, no protocol lines.
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/pair.h>
@@ -28,8 +25,7 @@ public:
   uint32_t pid() const { return process_->pid(); }
 
   nb::tuple wait() {
-    // Release the GIL while blocking; the C++ side is pure Win32. Reacquire
-    // before translating exceptions / building the result.
+    // Release the GIL while blocking; reacquire before touching Python objects.
     nb::gil_scoped_release release;
     try {
       const auto [code, reason] = process_->wait();

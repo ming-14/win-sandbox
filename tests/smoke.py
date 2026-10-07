@@ -1,4 +1,4 @@
-"""win_sandbox 冒烟测试（CI 用；x64 / arm64 通用）。
+"""win_sandbox 冒烟测试（CI 用；x64 / arm64 通用）
 
 覆盖点：
   - 包可导入、扩展模块可加载（本地为 in-process nanobind 扩展）
@@ -7,7 +7,7 @@
   - 写边界：可写档拿到可写的 winsandbox-* 私有 temp；只读档没有私有 temp，
     TMP/TEMP 保持宿主值且写不进去
 
-退出码：0 = 全部通过；非 0 = 失败（任意断言错误即失败）。
+退出码：0 = 全部通过；非 0 = 失败（任意断言错误即失败）
 """
 
 from __future__ import annotations
@@ -72,11 +72,10 @@ def main() -> int:
     assert reason2 == "user", f"terminate reason: {reason2}"
 
     # ── 4. 写边界：可写档有私有 temp，只读档什么都没有 ──
-    #
-    # 只读档刻意不建私有 temp、也不覆盖 TMP/TEMP：写白名单为空，子进程写任何
-    # 地方都被拒。这里把这个设计钉住，免得哪天又「顺手」给只读档补个可写目录。
+    # 只读档刻意不建私有 temp、也不覆盖 TMP/TEMP；钉住这个设计，免得哪天又
+    # 「顺手」给只读档补个可写目录
     def drain(handle: int) -> str:
-        """把一条管道读到 EOF，返回文本（句柄归调用方，读完即关）。"""
+        """把一条管道读到 EOF，返回文本（句柄归调用方，读完即关）"""
         fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
         chunks: list[bytes] = []
         while True:
@@ -88,7 +87,7 @@ def main() -> int:
         return b"".join(chunks).decode("utf-8", "replace").strip()
 
     def run_piped(command_line: str, workspace_write: bool, cwd: str) -> tuple[str, int]:
-        """跑一条命令并读回它的 stdout，返回 (文本, 退出码)。"""
+        """跑一条命令并读回它的 stdout，返回 (文本, 退出码)"""
         proc = sb.start_process(
             command_line=command_line,
             working_dir=cwd,
@@ -99,7 +98,7 @@ def main() -> int:
         code, _ = proc.wait()
         return text, code
 
-    # 第 2 步的 workdir 已经删了，这里另开一个：只用它当 cwd，不靠它可写。
+    # 第 2 步的 workdir 已经删了，这里另开一个：只用它当 cwd，不靠它可写
     workdir2 = tempfile.mkdtemp(prefix="ws_smoke_boundary_")
     try:
         echo_temp = 'cmd /c "echo %TEMP%"'
@@ -113,7 +112,7 @@ def main() -> int:
         assert not os.path.basename(read_only_temp).startswith("winsandbox-"), \
             f"read-only run must not get a private temp: {read_only_temp}"
 
-        # 只读档连宿主临时根都写不进去（写白名单为空）。
+        # 只读档连宿主临时根都写不进去（写白名单为空）
         probe = os.path.join(read_only_temp.rstrip("\\"), "ws_smoke_ro.txt")
         verdict, _ = run_piped(
             'cmd /c "echo x > %TEMP%\\ws_smoke_ro.txt && echo WROTE || echo DENIED"',
@@ -123,7 +122,7 @@ def main() -> int:
         assert not os.path.exists(probe), f"read-only run created {probe}"
 
         # 但只读档仍须能创建自己的内核对象（匿名管道、事件）：靠令牌默认 DACL
-        # 授予 logon SID。两者是两回事——文件写权限全关，对象创建照旧。
+        # 授予 logon SID——文件写权限全关，对象创建照旧
         obj_probe = os.path.join(workdir2, "ws_smoke_obj.py")
         with open(obj_probe, "w", encoding="utf-8") as f:
             f.write("import os\nos.pipe()\nprint(\"PIPE_OK\")\n")
