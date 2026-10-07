@@ -46,6 +46,12 @@ capability SID 一起构成写白名单
 默认 DACL 分别授予本次 run 的 temp SID / 子进程登录会话的 logon SID。这一项与文件系统
 写权限无关
 
+读权限不归沙箱管：沙箱只收紧写，读全看宿主环境 ACL，工作区必须对子进程自己持有的 SID
+可读。宿主被提升时（CI runner、以管理员身份跑的宿主），新建目录的 owner 是
+Administrators，ACE 也可能只落 `Administrators`/`SYSTEM`，而受限令牌的 LUA 语义把
+Administrators 降成 deny-only，子进程连读都会失败；给工作区补一条用户本人或 `Everyone`
+的读 ACE 即可
+
 `Process` 接口：`pid`、`wait()` → `(exit_code, reason)`、`poll_exit()`（未结束为 `None`）、
 `terminate(exit_code=1)`、`query_process_list()`，以及管道形态下的 `stdin_handle` /
 `stdout_handle` / `stderr_handle`

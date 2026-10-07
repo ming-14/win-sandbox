@@ -4,8 +4,15 @@
   - 包可导入、扩展模块可加载（本地为 in-process nanobind 扩展）
   - SandboxInstance.start_process 能启动真实进程并正常 wait
   - 进程树查询 / poll_exit / terminate 基本命令可用
-  - 写边界：可写档拿到可写的 winsandbox-* 私有 temp；只读档没有私有 temp，
-    TMP/TEMP 保持宿主值且写不进去
+  - 写边界：可写档拿到 winsandbox-* 私有 temp 且真能写工作区；只读档没有私有
+    temp，TMP/TEMP 保持宿主值且写不进去
+  - 只读档仍能创建自己的内核对象（匿名管道、事件）
+
+读权限不归沙箱管：沙箱只收紧写，读走宿主环境 ACL。工作区必须对子进程自己持有的 SID
+可读——宿主被提升时（CI runner 是 High Mandatory Level，新建目录的 owner 是
+Administrators），目录可能只落 Administrators / SYSTEM 两条 ACE，而受限令牌的 LUA
+语义把 Administrators 降成 deny-only，子进程于是连读都被拒。所以测试显式把工作区补成
+普通用户目录，见 grant_current_user
 
 退出码：0 = 全部通过；非 0 = 失败（任意断言错误即失败）
 """
@@ -23,6 +30,17 @@ import win_sandbox
 
 
 def main() -> int:
+    def grant_current_user(path: str) -> None:
+        """给工作区补一条当前用户本人的 ACE（真正的用户目录本来就该有）
+
+        不做这一步时，CI runner 上 mkdtemp 出来的目录只有 SYSTEM / Administrators /
+        OWNER RIGHTS，子进程的受限令牌一个都匹配不上，连只读档都读不了文件
+        """
+        sid = subprocess.run(["whoami", "/user"], capture_output=True, text=True,
+                             check=True).stdout.split()[-1]
+        subprocess.run(["icacls", path, "/grant", "*" + sid + ":(OI)(CI)M"],
+                       capture_output=True, text=True, check=True)
+
     # ── 1. 包/扩展加载 ──
     print(f"[smoke] win_sandbox {win_sandbox.__version__}")
     print(f"[smoke] python {sys.version.split()[0]} on {sys.platform}")
@@ -31,6 +49,7 @@ def main() -> int:
 
     # ── 2. 启动子进程（workspace-write，用临时目录当工作区） ──
     workdir = tempfile.mkdtemp(prefix="ws_smoke_")
+    grant_current_user(workdir)
     try:
         proc = sb.start_process(
             command_line="cmd /c echo smoke-ok",
@@ -73,7 +92,7 @@ def main() -> int:
     print(f"[smoke] terminate -> code={code2} reason={reason2}")
     assert reason2 == "user", f"terminate reason: {reason2}"
 
-    # ── 4. 写边界：可写档有私有 temp，只读档什么都没有 ──
+    # ── 4. 写边界：可写档有私有 temp 且能写工作区，只读档什么都没有 ──
     # 只读档刻意不建私有 temp、也不覆盖 TMP/TEMP；钉住这个设计，免得哪天又
     # 「顺手」给只读档补个可写目录
     def drain(handle: int) -> str:
@@ -111,6 +130,7 @@ def main() -> int:
 
     # 第 2 步的 workdir 已经删了，这里另开一个：只用它当 cwd，不靠它可写
     workdir2 = tempfile.mkdtemp(prefix="ws_smoke_boundary_")
+    grant_current_user(workdir2)
     try:
         echo_temp = 'cmd /c "echo %TEMP%"'
         writable_temp, code_w, err_w = run_piped(echo_temp, True, workdir2)
@@ -123,6 +143,17 @@ def main() -> int:
             f"writable run should get a private temp: {writable_temp}"
         assert not os.path.basename(read_only_temp).startswith("winsandbox-"), \
             f"read-only run must not get a private temp: {read_only_temp}"
+
+        # 可写档写工作区：这条同时钉住「工作区必须对用户本人可读可写」这个前提，
+        # 它不成立时授权在沙箱外就断了，后面几条会跟着一起红
+        wrote = os.path.join(workdir2, "ws_smoke_rw.txt")
+        rw_verdict, _, rw_err = run_piped(
+            'cmd /c "echo x > ws_smoke_rw.txt && echo WROTE || echo DENIED"', True, workdir2)
+        print(f"[smoke] writable write to workspace -> {rw_verdict}")
+        assert rw_verdict.endswith("WROTE"), \
+            f"writable run should write its workspace: {rw_verdict!r} (stderr {rw_err!r})"
+        assert os.path.exists(wrote), f"writable run reported WROTE but {wrote} is missing"
+        os.remove(wrote)
 
         # 只读档连宿主临时根都写不进去（写白名单为空）
         probe = os.path.join(read_only_temp.rstrip("\\"), "ws_smoke_ro.txt")
@@ -141,34 +172,6 @@ def main() -> int:
         obj_out, obj_code, obj_err = run_piped(
             f'"{sys.executable}" "{obj_probe}"', False, workdir2)
         print(f"[smoke] read-only os.pipe -> {obj_out} (exit {obj_code})")
-        if obj_code != 0:
-            print(f"[diag] stderr={obj_err!r}")
-            print(f"[diag] cwd={workdir2} exe={sys.executable} probe={obj_probe}")
-            diag = [
-                ("py -V", f'"{sys.executable}" -V'),
-                ("py -c", f'"{sys.executable}" -c "print(1)"'),
-                ("py -B script", f'"{sys.executable}" -B "{obj_probe}"'),
-                ("py -I -S script", f'"{sys.executable}" -I -S "{obj_probe}"'),
-                ("type script", f'cmd /c "type {obj_probe}"'),
-                ("child whoami", "cmd /c whoami"),
-                ("child dir repo", "cmd /c dir /b"),
-                ("env", 'cmd /c "echo TMP=%TMP% TEMP=%TEMP% USERPROFILE=%USERPROFILE%"'),
-            ]
-            for label, cmd in diag:
-                o, c, e = run_piped(cmd, False, workdir2)
-                print(f"[diag] {label}: exit={c} out={o!r} err={e!r}")
-            def host(command: str) -> str:
-                done = subprocess.run(command, shell=True, capture_output=True,
-                                       text=True, errors="replace")
-                return (done.stdout + done.stderr).strip()
-
-            print("[diag-host] whoami: " + host("whoami"))
-            print("[diag-host] groups: " + host("whoami /groups"))
-            print("[diag-host] icacls dir: " + host("icacls "  + chr(34) +  workdir2 + chr(34)))
-            print("[diag-host] icacls probe: " + host("icacls "  + chr(34) +  obj_probe + chr(34)))
-            print("[diag-host] icacls temp root: "
-                  + host("icacls "  + chr(34) +  tempfile.gettempdir() + chr(34)))
-
         assert obj_code == 0 and "PIPE_OK" in obj_out, (
             f"read-only run must still create its own objects: {obj_out!r} "
             f"(exit {obj_code}, stderr {obj_err!r})")
