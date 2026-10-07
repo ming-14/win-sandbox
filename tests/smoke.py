@@ -164,10 +164,10 @@ def main() -> int:
 
             print("[diag-host] whoami: " + host("whoami"))
             print("[diag-host] groups: " + host("whoami /groups"))
-            print("[diag-host] icacls dir: " + host("icacls " + Q + workdir2 + Q))
-            print("[diag-host] icacls probe: " + host("icacls " + Q + obj_probe + Q))
+            print("[diag-host] icacls dir: " + host("icacls "  + chr(34) +  workdir2 + chr(34)))
+            print("[diag-host] icacls probe: " + host("icacls "  + chr(34) +  obj_probe + chr(34)))
             print("[diag-host] icacls temp root: "
-                  + host("icacls " + Q + tempfile.gettempdir() + Q))
+                  + host("icacls "  + chr(34) +  tempfile.gettempdir() + chr(34)))
 
         assert obj_code == 0 and "PIPE_OK" in obj_out, (
             f"read-only run must still create its own objects: {obj_out!r} "
