@@ -3,9 +3,9 @@
 // Three stdio shapes share one spawn core (`spawnWithStdio`): the caller's own
 // std handles (inherited), three anonymous pipes created here, or an external
 // HPCON driving a pseudo console. Every shape builds the child's environment
-// block explicitly from the host environment with TMP/TEMP redirected to the
-// granted private temp directory — the host environment is never modified, so
-// concurrent spawns cannot race.
+// block explicitly from the host environment, redirecting TMP/TEMP to the
+// granted private temp directory when the run has one (writable runs) — the
+// host environment is never modified, so concurrent spawns cannot race.
 #include "winacl.h"
 
 #include <wincon.h>

@@ -217,13 +217,13 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
   }
 
   // Private temp directory + its revocable capability, named
-  // `winsandbox-<hex>` directly under the host temp root. Every run gets one,
-  // read-only included: the ambient temp root is outside the write allowlist,
-  // and a process that cannot write anywhere (DLL init, interpreters) fails
-  // to start at all.
+  // `winsandbox-<hex>` directly under the host temp root. Writable runs only:
+  // a read-only run is granted no writable resource at all, so it gets no
+  // private temp and TMP/TEMP stay at the host values (writes there are
+  // denied by the restricted token).
   std::wstring tempDir;
   PSID tempSidPtr = nullptr;
-  {
+  if (workspaceWrite) {
     wchar_t tmpPath[MAX_PATH + 1] = {};
     if (GetTempPathW(MAX_PATH + 1, tmpPath) == 0) {
       throw std::runtime_error("GetTempPathW failed");
@@ -252,8 +252,8 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     }
   }
 
-  // Restricted token (the write whitelist: workspace SID when writable, plus
-  // the private temp SID in both modes).
+  // Restricted token (the write whitelist: the workspace SID plus the private
+  // temp SID for writable runs; empty for read-only runs).
   std::vector<PSID> writeSids;
   PSID wsSidPtr = nullptr;
   PSID logonSid = nullptr;
@@ -264,16 +264,20 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
     if (workspaceWrite) {
       wsSidPtr = parseSid(workspaceSid);
       writeSids.push_back(wsSidPtr);
+      writeSids.push_back(tempSidPtr);
     }
-    writeSids.push_back(tempSidPtr);
     // Both modes keep WRITE_RESTRICTED: the write whitelist is exactly the
-    // capability SIDs above — never a silently disabled mechanism. The temp
-    // SID rides along in read-only too, because the ambient temp root is denied
-    // and a child that cannot write anywhere fails its DLL initialization; the
-    // explicit per-run TMP/TEMP override (env block below) points it at the
-    // granted directory.
+    // capability SIDs above — never a silently disabled mechanism. A read-only
+    // run holds no capability at all, so its whitelist is empty and the
+    // restricting pass denies every file write.
     token = createRestrictedToken(writeSids, logonSid, worldSid);
-    setTokenDefaultDaclGrant(token, tempSidPtr);
+    // The default DACL must name one of the token's own restricting SIDs, or
+    // the child cannot create objects of its own (CreatePipe/CreateEvent come
+    // back ACCESS_DENIED). Grant the narrowest one available: the per-run temp
+    // SID for writable runs, else the logon SID — always in the restricting
+    // list, and far narrower than Everyone.
+    const PSID defaultDaclSid = tempSidPtr != nullptr ? tempSidPtr : logonSid;
+    setTokenDefaultDaclGrant(token, defaultDaclSid);
     // 加固宿主进程 DACL：拒绝沙箱 restricting SIDs（logon SID + Everyone）对
     // 宿主获得进程写类权限（PROCESS_TERMINATE 等）。fail-closed：失败即抛错，
     // 子进程绝不带洞 spawn。
@@ -304,22 +308,24 @@ std::shared_ptr<SandboxedProcess> SandboxInstance::startProcess(
   }
 
   // Spawn (ConPTY when an HPCON is supplied; otherwise the launcher's own std
-  // handles or, with pipeStdio, three pipes of our own). The child environment
-  // is built explicitly with TMP/TEMP pointing at the granted private temp
-  // directory: the child's DLL initialization writes temporary files, and the
-  // WRITE_RESTRICTED intersection would deny the ambient temp root. The host
+  // handles or, with pipeStdio, three pipes of our own). A writable run's child
+  // environment is built explicitly with TMP/TEMP pointing at the granted
+  // private temp directory (its DLL initialization writes temporary files, and
+  // the WRITE_RESTRICTED intersection denies the ambient temp root). A
+  // read-only run gets no override: TMP/TEMP stay at the host values. The host
   // environment is never modified (concurrent startProcess calls cannot race).
+  const std::wstring* tempArg = tempDir.empty() ? nullptr : &tempDir;
   SpawnedChild child;
   try {
     if (hpcon != nullptr) {
       child = spawnSandboxedConPTY(token, job->handle(), hpcon, commandLine, workingDir,
-                                   &tempDir, envOverrides);
+                                   tempArg, envOverrides);
     } else if (pipeStdio) {
       child = spawnSandboxedPiped(token, job->handle(), commandLine, workingDir, true,
-                                  &tempDir, envOverrides);
+                                  tempArg, envOverrides);
     } else {
       child = spawnSandboxedInherited(token, job->handle(), commandLine, workingDir, true,
-                                      &tempDir, envOverrides);
+                                      tempArg, envOverrides);
     }
   } catch (...) {
     if (tempSidPtr != nullptr) {

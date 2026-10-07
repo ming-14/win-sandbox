@@ -51,15 +51,17 @@ PSID parseSid(const std::wstring& sddl);
 // --- token.cpp --------------------------------------------------------------
 
 // Build the write-restricted token. `writeSids` is the whole write whitelist:
-// the workspace capability SID when the workspace is writable, plus the private
-// temp capability SID (both modes). `outLogonSid`/`outWorldSid` receive the
+// empty for a read-only run, otherwise the workspace capability SID plus the
+// private temp capability SID. `outLogonSid`/`outWorldSid` receive the
 // keep-alive SIDs the caller owns (LocalFree).
 HANDLE createRestrictedToken(const std::vector<PSID>& writeSids,
                              PSID& outLogonSid, PSID& outWorldSid);
 
 // Merge a full-access ACE for `sid` into the token's default DACL so new
-// objects (anonymous pipes etc.) the confined child creates pass the
-// restricting-SID write check. Fails closed.
+// objects (anonymous pipes, loader events) the confined child creates pass the
+// restricting-SID write check. `sid` must be one of the token's restricting
+// SIDs; callers pass the narrowest one they hold — the per-run temp SID for
+// writable runs, the logon SID for read-only runs. Fails closed.
 void setTokenDefaultDaclGrant(HANDLE token, PSID sid);
 
 // --- acl.cpp ----------------------------------------------------------------

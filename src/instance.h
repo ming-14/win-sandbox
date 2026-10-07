@@ -42,8 +42,9 @@ inline const char* limitKindString(LimitKind kind) {
 
 /**
  * One confined run: the spawned primary process plus its job, token, private
- * temp directory, and settled exit facts. The temp directory is always
- * self-managed: dispose() revokes its capability grant and removes it.
+ * temp directory (writable runs only), and settled exit facts. A private temp
+ * directory, when present, is self-managed: dispose() revokes its capability
+ * grant and removes it.
  *
  * Ownership: SandboxInstance keeps a shared_ptr per process; PyProcess holds
  * another. The object survives shutdown (disposed) so Python wrappers never
@@ -117,9 +118,11 @@ public:
    * Spawn one confined process.
    * @param commandLine - full command line (CreateProcessAsUserW splits it).
    * @param workingDir - workspace root (must exist; becomes the workspace).
-   * @param workspaceWrite - true = the workspace is writable too; false =
-   *                         read-only workspace. Either way the run gets its
-   *                         own writable private temp directory.
+   * @param workspaceWrite - true = the workspace is writable and the run gets
+   *                         its own writable private temp directory; false =
+   *                         strictly read-only: no workspace grant, no private
+   *                         temp, TMP/TEMP left at the host values, and an
+   *                         empty write whitelist.
    * @param limits - resource limits (zeros = unlimited).
    * @param hpcon - external pseudo console handle, or nullptr to use one of the
    *                two handle shapes below.

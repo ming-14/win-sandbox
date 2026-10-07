@@ -28,10 +28,18 @@ sb.shutdown()
 None 时：True = 给子进程三条匿名管道，False = 让它继承本进程的标准句柄；两个都给
 会报错）。
 
-每次 spawn 都给子进程一个**私有的可写临时目录**（`TMP`/`TEMP` 指向它，进程退出即
-回收），**只读档也有**：宿主临时根目录在写白名单之外，拿不到可写临时目录的进程
-（DLL 初始化、解释器）根本起不来。两档的差别只有工作区本身。目录名固定为
-`<宿主临时根>\winsandbox-<hex>`。
+**可写档**（`workspace_write=True`）每次 spawn 都给子进程一个**私有的可写临时目录**
+（`TMP`/`TEMP` 指向它，进程退出即回收），目录名固定为
+`<宿主临时根>\winsandbox-<hex>`；它的 capability SID 与工作区 SID 一起构成写白名单。
+
+**只读档**（`workspace_write=False`）**不建私有 temp、不覆盖 `TMP`/`TEMP`，写白名单为空**：
+子进程在宿主临时根下写任何东西都会被拒，需要可写临时目录的程序（解释器、部分 DLL
+初始化路径）在只读档下可能起不来。
+
+两档都仍需子进程能创建自己的内核对象（匿名管道、事件等，否则 DLL 初始化就挂了）：
+办法是把令牌默认 DACL 授予一个 restricting SID——可写档用本次 run 的 temp SID，
+只读档用子进程自己登录会话的 logon SID。这一项与文件系统写权限无关，不会让只读档
+变得可写。
 
 `Process` 接口：`pid`、`wait()` → `(exit_code, reason)`、`poll_exit()`（未结束返回
 None）、`terminate(exit_code=1)`、`query_process_list()`，以及管道形态下的
