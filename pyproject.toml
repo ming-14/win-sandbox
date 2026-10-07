@@ -21,8 +21,6 @@ classifiers = [
   "Operating System :: Microsoft :: Windows",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-[project.urls]
-Homepage = "https://github.com/ming-14/PTY-Agent"
 
 [tool.scikit-build]
 # CMake 源目录是 src/（CMakeLists.txt 所在处）
