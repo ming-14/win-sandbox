@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import msvcrt
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -149,11 +150,25 @@ def main() -> int:
                 ("py -B script", f'"{sys.executable}" -B "{obj_probe}"'),
                 ("py -I -S script", f'"{sys.executable}" -I -S "{obj_probe}"'),
                 ("type script", f'cmd /c "type {obj_probe}"'),
+                ("child whoami", "cmd /c whoami"),
+                ("child dir repo", "cmd /c dir /b"),
                 ("env", 'cmd /c "echo TMP=%TMP% TEMP=%TEMP% USERPROFILE=%USERPROFILE%"'),
             ]
             for label, cmd in diag:
                 o, c, e = run_piped(cmd, False, workdir2)
                 print(f"[diag] {label}: exit={c} out={o!r} err={e!r}")
+            def host(command: str) -> str:
+                done = subprocess.run(command, shell=True, capture_output=True,
+                                       text=True, errors="replace")
+                return (done.stdout + done.stderr).strip()
+
+            print("[diag-host] whoami: " + host("whoami"))
+            print("[diag-host] groups: " + host("whoami /groups"))
+            print("[diag-host] icacls dir: " + host("icacls " + Q + workdir2 + Q))
+            print("[diag-host] icacls probe: " + host("icacls " + Q + obj_probe + Q))
+            print("[diag-host] icacls temp root: "
+                  + host("icacls " + Q + tempfile.gettempdir() + Q))
+
         assert obj_code == 0 and "PIPE_OK" in obj_out, (
             f"read-only run must still create its own objects: {obj_out!r} "
             f"(exit {obj_code}, stderr {obj_err!r})")
